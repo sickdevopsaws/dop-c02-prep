@@ -1,0 +1,292 @@
+[
+  {
+    "id": "monitoring-001",
+    "domain": "monitoring",
+    "topic": "CloudWatch agent",
+    "difficulty": "medium",
+    "scenario": "A company runs 300 Amazon Linux EC2 instances across several Auto Scaling groups. The operations team needs memory utilization and free disk space for every instance in CloudWatch, including instances launched in the future, so it can create alarms. All instances are already managed by AWS Systems Manager.",
+    "question": "Which solution meets these requirements with the LEAST operational overhead?",
+    "qualifier": "LEAST operational overhead",
+    "select": 1,
+    "options": [
+      { "text": "Store a CloudWatch agent configuration in Systems Manager Parameter Store, and use a State Manager association targeted by tag to install the `AmazonCloudWatchAgent` package and apply that configuration. Attach `CloudWatchAgentServerPolicy` to the instance role.", "correct": true, "why": "Memory and disk usage are OS-level metrics that EC2 doesn't publish; the CloudWatch agent collects them. A tag-targeted State Manager association automatically applies the agent and its configuration to new instances too." },
+      { "text": "Enable detailed monitoring on the launch templates so EC2 publishes memory and disk metrics every minute.", "correct": false, "why": "Detailed monitoring only changes the default EC2 metrics (CPU, network, disk I/O for instance store, status checks) from 5-minute to 1-minute periods. It never adds memory or filesystem usage." },
+      { "text": "Create CloudWatch Logs metric filters on `/var/log/messages` that extract memory and disk values from the system log.", "correct": false, "why": "The system log doesn't report memory or disk utilization at regular intervals. Something would still have to ship the logs, and metric filters can only parse log text that exists." },
+      { "text": "Add a cron job to each AMI that runs a script calling `PutMetricData` with memory and disk values every minute.", "correct": false, "why": "This works, but the team would have to maintain custom scripts, AMI rebuilds, and credentials handling. The managed agent does the same job with less overhead." }
+    ],
+    "takeaway": "EC2 memory and disk-space metrics require the CloudWatch agent; roll it out at scale with Systems Manager State Manager and Parameter Store.",
+    "trap": "Detailed monitoring does not add memory metrics",
+    "services": ["CloudWatch", "Systems Manager", "EC2"]
+  },
+  {
+    "id": "monitoring-002",
+    "domain": "monitoring",
+    "topic": "CloudWatch Logs metric filters",
+    "difficulty": "medium",
+    "scenario": "A payments service running on Amazon ECS on AWS Fargate sends application logs to the CloudWatch Logs group `/ecs/payments`. When a charge fails, the service logs a JSON line with `\"event\":\"PAYMENT_FAILED\"`. The on-call team must be paged through an existing SNS topic whenever more than 10 failures occur within 5 minutes.",
+    "question": "Which solution meets this requirement with the LEAST operational overhead?",
+    "qualifier": "LEAST operational overhead",
+    "select": 1,
+    "options": [
+      { "text": "Create a metric filter on the log group with the pattern `{ $.event = \"PAYMENT_FAILED\" }` that publishes a count metric, then create a CloudWatch alarm on the metric's 5-minute Sum > 10 that notifies the SNS topic.", "correct": true, "why": "Metric filters turn matching log events into a CloudWatch metric, and alarms can watch that metric. The alarm then publishes to SNS, and all of it is managed configuration with no code." },
+      { "text": "Create a subscription filter on the log group that sends matching events directly to a CloudWatch alarm with a threshold of 10.", "correct": false, "why": "CloudWatch alarms only evaluate metrics. They can't receive log events. Subscription filters deliver to Kinesis Data Streams, Firehose, Lambda, or OpenSearch Service." },
+      { "text": "Create an EventBridge rule with an event pattern that matches `PAYMENT_FAILED` log lines from the log group and targets the SNS topic.", "correct": false, "why": "CloudWatch Logs doesn't emit each ingested log line as an EventBridge event, so the rule would never match. EventBridge also can't count events over a 5-minute window." },
+      { "text": "Schedule a Lambda function every minute that calls `FilterLogEvents`, counts failures over the last 5 minutes, and publishes to SNS.", "correct": false, "why": "It works, but it adds custom code, scheduling, and API throttling concerns. The native metric filter and alarm do the same thing with no code." }
+    ],
+    "takeaway": "Logs to alarm means log group, then metric filter, then metric, then alarm. Alarms only watch metrics.",
+    "trap": "Alarms only watch metrics",
+    "services": ["CloudWatch Logs", "CloudWatch", "SNS", "ECS"]
+  },
+  {
+    "id": "monitoring-003",
+    "domain": "monitoring",
+    "topic": "Embedded metric format",
+    "difficulty": "hard",
+    "scenario": "A retail company's checkout Lambda function handles 3,000 requests per second at peak. Product managers want custom business metrics, such as cart value and items per order, broken down by `PaymentMethod` and `Country`. Early tests that called `PutMetricData` from the function added latency and hit API throttling. The team also wants to keep the raw per-request values for later investigation.",
+    "question": "Which solution meets these requirements with the LEAST impact on function latency?",
+    "qualifier": "LEAST impact on function latency",
+    "select": 1,
+    "options": [
+      { "text": "Write each data point to standard output as a structured JSON log in CloudWatch embedded metric format (EMF), declaring the metrics and the `PaymentMethod` and `Country` dimensions in the `_aws` metadata.", "correct": true, "why": "CloudWatch extracts metrics from EMF log events asynchronously, so the function makes no synchronous metric API calls. The full JSON event, with its raw values, stays in CloudWatch Logs for Logs Insights queries." },
+      { "text": "Enable CloudWatch Lambda Insights on the function and add the business fields as Lambda Insights custom dimensions.", "correct": false, "why": "Lambda Insights collects system-level performance metrics such as memory, CPU, init duration, and network. It doesn't provide business metrics or custom dimensions like cart value." },
+      { "text": "Batch the values in memory and call `PutMetricData` with up to 1,000 metric data points per request at the end of each invocation.", "correct": false, "why": "Batching cuts the number of calls, but each invocation still makes a synchronous network call that adds latency and can be throttled at 3,000 RPS. Raw values are also not kept for investigation." },
+      { "text": "Log plain-text lines and create one metric filter per payment-method and country combination to publish the metrics.", "correct": false, "why": "Maintaining one filter per dimension combination doesn't scale and is brittle, and there are quotas on metric filters per log group. EMF declares dimensions inside the log event itself." }
+    ],
+    "takeaway": "Embedded metric format publishes high-volume custom metrics through logs, asynchronously, with no PutMetricData calls, and keeps the raw events queryable.",
+    "trap": "Lambda Insights is for system metrics, not business metrics",
+    "services": ["CloudWatch", "CloudWatch Logs", "Lambda"]
+  },
+  {
+    "id": "monitoring-004",
+    "domain": "monitoring",
+    "topic": "Composite alarms",
+    "difficulty": "hard",
+    "scenario": "An SRE team gets paged too often. It has separate CloudWatch alarms for ALB p99 latency, the 5XX error rate, and RDS CPU, and each pages independently, often for brief blips. The team wants one page only when high latency AND a high error rate occur together. It also wants to suppress that page while a deployment is running; deployments are signaled by an existing alarm named `DeploymentInProgress`.",
+    "question": "Which solution meets these requirements with the LEAST operational overhead?",
+    "qualifier": "LEAST operational overhead",
+    "select": 1,
+    "options": [
+      { "text": "Remove the actions from the individual alarms and create a composite alarm with the rule `ALARM(LatencyHigh) AND ALARM(ErrorRateHigh)`, an SNS action, and `DeploymentInProgress` configured as its actions suppressor alarm.", "correct": true, "why": "Composite alarms combine other alarms' states with Boolean logic. With an actions suppressor, they hold back their actions while the suppressor alarm is in ALARM, so there's one page, only when both conditions hold, and none during deployments." },
+      { "text": "Create an EventBridge rule that matches both alarms' state changes in a single event pattern and invokes SNS only when both arrive within 5 minutes.", "correct": false, "why": "EventBridge rules evaluate each event on its own and have no state, so a pattern can't require two separate events to have occurred. Correlating them would need extra code." },
+      { "text": "Use metric math to multiply the latency metric by the error-rate metric and alarm when the product exceeds a threshold.", "correct": false, "why": "The product of two metrics isn't a reliable AND, because one very high value can trip it while the other is normal. It also doesn't handle deployment suppression." },
+      { "text": "Increase the evaluation periods on every alarm to 15 minutes and disable actions on them with a script during each deployment.", "correct": false, "why": "Longer evaluation periods delay real alerts and still page separately for each alarm. A script that disables and re-enables actions adds overhead that the composite alarm's actions suppressor already handles." }
+    ],
+    "takeaway": "Use composite alarms (AND/OR/NOT of alarm states) with an actions suppressor to cut alert noise.",
+    "trap": "EventBridge can't correlate two separate events",
+    "services": ["CloudWatch", "SNS", "EventBridge"]
+  },
+  {
+    "id": "monitoring-005",
+    "domain": "monitoring",
+    "topic": "Metric math and anomaly detection",
+    "difficulty": "hard",
+    "scenario": "A streaming company has an ALB in front of its API. It needs two alerts. The first must fire when 5XX responses from targets exceed 2% of all requests. The second must fire when target response time departs from its normal pattern, which follows a strong daily and weekly seasonality that makes any fixed threshold either noisy or blind at night. The team wants no custom code.",
+    "question": "Which actions should the DevOps engineer take? (Select TWO.)",
+    "qualifier": null,
+    "select": 2,
+    "options": [
+      { "text": "Create an alarm on a metric math expression `100 * m1 / m2`, where m1 is `HTTPCode_Target_5XX_Count` (Sum) and m2 is `RequestCount` (Sum), with a threshold of 2.", "correct": true, "why": "CloudWatch alarms can evaluate a metric math expression, so the error rate is computed on the fly from the two ALB metrics without any code." },
+      { "text": "Create a CloudWatch anomaly detection alarm on `TargetResponseTime` that triggers when the metric goes above the band.", "correct": true, "why": "Anomaly detection trains a model on the metric's history, including daily and weekly seasonality, and the alarm compares values to the expected band rather than a fixed threshold." },
+      { "text": "Create an alarm on `HTTPCode_Target_5XX_Count` with a static threshold of 2.", "correct": false, "why": "This alarms on an absolute count of 2 errors, not on a 2% share of requests. It would be noisy at peak traffic and meaningless at low traffic." },
+      { "text": "Schedule a Lambda function that computes the error rate every minute and publishes it as a custom metric to alarm on.", "correct": false, "why": "It works, but it's custom code that the requirement excludes. Metric math does the same thing natively." },
+      { "text": "Enable CloudWatch Container Insights on the ALB to get an automatic error-rate metric and latency baseline.", "correct": false, "why": "Container Insights collects metrics for ECS, EKS, and Kubernetes clusters. It isn't a feature of an ALB and doesn't create baselines or rate alarms." }
+    ],
+    "takeaway": "Alarm on ratios with metric math expressions, and on seasonal metrics with anomaly detection bands.",
+    "trap": "Counts vs rates; static thresholds on seasonal data",
+    "services": ["CloudWatch", "ELB"]
+  },
+  {
+    "id": "monitoring-006",
+    "domain": "monitoring",
+    "topic": "Cross-account log centralization",
+    "difficulty": "hard",
+    "scenario": "A company has 80 AWS accounts in AWS Organizations, and new accounts are added monthly. The security team wants application log events from every account streamed in near real time into a single Amazon Data Firehose stream in a central logging account, which delivers them to a third-party SIEM. The solution must cover new log groups and new accounts automatically and must not allow accounts outside the organization to send data.",
+    "question": "Which combination of steps meets these requirements? (Select TWO.)",
+    "qualifier": null,
+    "select": 2,
+    "options": [
+      { "text": "In the logging account, create a CloudWatch Logs destination that targets the Firehose stream, with a destination access policy that allows `logs:PutSubscriptionFilter` on the condition `aws:PrincipalOrgID` equals the organization ID.", "correct": true, "why": "A CloudWatch Logs destination is the cross-account target for subscription filters, and it supports Kinesis Data Streams and Firehose. Scoping its policy with aws:PrincipalOrgID admits only the organization's accounts, including new ones." },
+      { "text": "In each member account, create an account-level subscription filter policy (`PutAccountPolicy` with type `SUBSCRIPTION_FILTER_POLICY`) that points to the destination ARN, and roll it out with CloudFormation StackSets using service-managed automatic deployment.", "correct": true, "why": "An account-level subscription filter policy applies to all current and future log groups in the account. StackSets with automatic deployment applies it to new accounts as they join the organization." },
+      { "text": "Create a CloudWatch cross-account observability sink in the logging account and link every member account to it so the logs flow into the Firehose stream.", "correct": false, "why": "Observability Access Manager sinks and links let a monitoring account view and query source accounts' telemetry. They don't stream log events into Firehose or another delivery pipeline." },
+      { "text": "Schedule a `CreateExportTask` every 5 minutes in each account to export log groups to an S3 bucket in the logging account, and trigger Firehose from S3.", "correct": false, "why": "Export tasks are batch jobs that can take up to 12 hours, and only one can run per account at a time, so this isn't near real time. Firehose also can't use S3 as a source." },
+      { "text": "Create subscription filters in each member account that send directly to the Firehose stream ARN in the logging account, with no destination resource.", "correct": false, "why": "Cross-account subscription delivery goes through a CloudWatch Logs destination in the receiving account. Per-log-group filters also wouldn't automatically cover new log groups." }
+    ],
+    "takeaway": "Cross-account log streaming means a Logs destination (Kinesis or Firehose) with an org-scoped policy, plus subscription filters (an account-level policy) in the source accounts; OAM is for viewing, not shipping.",
+    "trap": "OAM shares telemetry for viewing, it does not stream logs",
+    "services": ["CloudWatch Logs", "Firehose", "Organizations", "CloudFormation"]
+  },
+  {
+    "id": "monitoring-007",
+    "domain": "monitoring",
+    "topic": "CloudWatch cross-account observability",
+    "difficulty": "medium",
+    "scenario": "A platform team operates a central monitoring account for 25 workload accounts in one AWS Organization. Engineers want to sign in only to the monitoring account and from there search logs, build dashboards and alarms on metrics, and open the X-Ray trace map across all workload accounts, without copying the telemetry.",
+    "question": "Which solution meets these requirements with the LEAST operational overhead?",
+    "qualifier": "LEAST operational overhead",
+    "select": 1,
+    "options": [
+      { "text": "Configure CloudWatch cross-account observability: create an Observability Access Manager sink in the monitoring account that shares metrics, logs, and traces, and create links from every workload account, for example with a CloudFormation StackSet across the organization.", "correct": true, "why": "With OAM sinks and links, the monitoring account can query metrics, logs, and traces from the source accounts in place, with no copying. Cross-account alarms, Logs Insights queries, and the trace map then work in one console." },
+      { "text": "Stream all workload-account logs and metrics with subscription filters and metric streams into the monitoring account, and re-ingest them there.", "correct": false, "why": "This copies and pays for the telemetry twice and adds pipelines to operate, and traces still aren't covered. The requirement says not to copy." },
+      { "text": "Create an IAM role in each workload account and have engineers switch roles into each account to view CloudWatch.", "correct": false, "why": "Role switching gives access, but engineers still see one account at a time. There's no single cross-account search, dashboard, or trace map." },
+      { "text": "Enable an organization trail in CloudTrail and query it from the monitoring account with CloudTrail Lake.", "correct": false, "why": "CloudTrail records API activity. It doesn't contain application logs, CloudWatch metrics, or X-Ray traces." }
+    ],
+    "takeaway": "CloudWatch cross-account observability (OAM sink and links) gives one monitoring account in-place access to metrics, logs, and traces from many accounts.",
+    "trap": "Copying telemetry when it can be shared",
+    "services": ["CloudWatch", "X-Ray", "CloudFormation"]
+  },
+  {
+    "id": "monitoring-008",
+    "domain": "monitoring",
+    "topic": "AWS X-Ray",
+    "difficulty": "hard",
+    "scenario": "A company runs a Java service on Amazon ECS with the EC2 launch type. The code is already instrumented with the X-Ray SDK, but no traces appear in the X-Ray console. The task definition has a single container. Support engineers also want to search traces by `customerTier` (for example, `gold`) to see whether premium customers are affected by latency issues.",
+    "question": "Which combination of actions meets these requirements? (Select TWO.)",
+    "qualifier": null,
+    "select": 2,
+    "options": [
+      { "text": "Add the X-Ray daemon as a sidecar container in the task definition, listening on UDP port 2000, and grant the task role `xray:PutTraceSegments` and `xray:PutTelemetryRecords`, for example with `AWSXRayDaemonWriteAccess`.", "correct": true, "why": "The SDK sends segments over UDP to a daemon on port 2000, and the daemon uploads them to the X-Ray API. Without a daemon, or an ADOT collector, and the IAM permissions, nothing reaches X-Ray." },
+      { "text": "Record `customerTier` as an annotation on the segment.", "correct": true, "why": "Annotations are indexed key-value pairs, so they can be used in filter expressions such as `annotation.customerTier = \"gold\"` to search traces." },
+      { "text": "Record `customerTier` as metadata on the segment.", "correct": false, "why": "Metadata is stored with the trace but isn't indexed, so it can't be used in filter expressions to search for traces." },
+      { "text": "Allow inbound TCP port 2000 from 0.0.0.0/0 in the container instance's security group so that the X-Ray service can pull traces from the application.", "correct": false, "why": "X-Ray never pulls traces. The SDK pushes segments over UDP to a local daemon, which pushes them outbound to the X-Ray API, so opening inbound ports to the internet is useless and insecure." },
+      { "text": "Create a sampling rule with a fixed rate of 100% so that all requests are sent to X-Ray.", "correct": false, "why": "Sampling controls how many requests are recorded, but no traces arrive at all because there's no daemon. Raising sampling to 100% also increases cost without fixing the root cause." }
+    ],
+    "takeaway": "X-Ray needs a daemon or ADOT collector on UDP 2000 plus IAM permissions, and only annotations, not metadata, are searchable.",
+    "trap": "Annotations vs metadata",
+    "services": ["X-Ray", "ECS", "IAM"]
+  },
+  {
+    "id": "monitoring-009",
+    "domain": "monitoring",
+    "topic": "Amazon Managed Service for Prometheus",
+    "difficulty": "hard",
+    "scenario": "A company runs several Amazon EKS clusters whose workloads already expose Prometheus metrics endpoints. It currently runs self-managed Prometheus servers that keep running out of disk and lose data during upgrades. The company wants a managed, highly available Prometheus-compatible store with PromQL support and long retention, plus managed dashboards that engineers sign in to with their existing AWS IAM Identity Center identities. The team does not want to run scraping agents itself if possible.",
+    "question": "Which solution meets these requirements with the LEAST operational overhead?",
+    "qualifier": "LEAST operational overhead",
+    "select": 1,
+    "options": [
+      { "text": "Create an Amazon Managed Service for Prometheus workspace, configure an AWS managed collector (scraper) for each EKS cluster, and create an Amazon Managed Grafana workspace that uses IAM Identity Center authentication and the Prometheus workspace as a data source.", "correct": true, "why": "Managed Service for Prometheus is a managed, highly available, PromQL-compatible store, and its managed collectors scrape EKS without agents in the cluster. Managed Grafana supports IAM Identity Center sign-in and has a native data source for it." },
+      { "text": "Enable CloudWatch Container Insights on each cluster and build CloudWatch dashboards with PromQL queries.", "correct": false, "why": "Container Insights collects its own set of container metrics, not your existing Prometheus metrics in a PromQL-compatible store. The requirement is specifically a managed Prometheus backend with Grafana dashboards." },
+      { "text": "Run Prometheus with Thanos sidecars on each cluster, store blocks in S3, and self-host Grafana on EKS with SAML.", "correct": false, "why": "This can solve retention, but the team keeps operating Prometheus, Thanos, and Grafana itself, which is the overhead it wants to get rid of." },
+      { "text": "Send the Prometheus metrics to Amazon OpenSearch Service and use OpenSearch Dashboards with fine-grained access control.", "correct": false, "why": "OpenSearch is a search and log analytics engine, not a Prometheus-compatible time-series store. Existing PromQL queries and Grafana dashboards wouldn't carry over." }
+    ],
+    "takeaway": "For managed Prometheus on AWS, use Amazon Managed Service for Prometheus (with managed collectors or ADOT) and Amazon Managed Grafana with IAM Identity Center sign-in.",
+    "trap": "Container Insights is not a Prometheus backend",
+    "services": ["Managed Service for Prometheus", "Managed Grafana", "EKS", "IAM Identity Center"]
+  },
+  {
+    "id": "monitoring-010",
+    "domain": "monitoring",
+    "topic": "AWS CloudTrail",
+    "difficulty": "hard",
+    "scenario": "Auditors at a bank discovered that objects were deleted from a regulated S3 bucket, and nobody could say which principal did it. The bank uses AWS Organizations with 40 accounts. It now requires a record of who reads or deletes objects in its regulated buckets across all accounts. It also requires being able to prove to auditors that the audit log files were not modified or deleted after delivery.",
+    "question": "Which combination of actions meets these requirements? (Select TWO.)",
+    "qualifier": null,
+    "select": 2,
+    "options": [
+      { "text": "Create an organization trail from the management account (or a delegated administrator account) and enable S3 data events for the regulated buckets.", "correct": true, "why": "Object-level operations such as GetObject and DeleteObject are data events, which trails don't log by default. An organization trail applies the configuration to every member account, including new ones." },
+      { "text": "Enable CloudTrail log file integrity validation on the trail.", "correct": true, "why": "Integrity validation delivers hourly digest files signed with SHA-256 hashing and RSA signing. Running `validate-logs` proves whether any log file was modified or deleted after delivery." },
+      { "text": "Keep the default trail configuration, because `DeleteObject` is recorded as a management event.", "correct": false, "why": "Bucket-level calls such as DeleteBucket are management events, but object-level calls such as DeleteObject and GetObject are data events, which must be enabled explicitly." },
+      { "text": "Enable CloudTrail Insights so that unauthorized object deletions are detected and attributed to the principal.", "correct": false, "why": "CloudTrail Insights detects unusual API call volume or error rates against a baseline. It doesn't log individual object reads or deletes, or who made them." },
+      { "text": "Enable S3 server access logging and present the access logs to auditors as the tamper-proof record.", "correct": false, "why": "Server access logs are delivered on a best-effort basis and have no built-in integrity validation. CloudTrail data events with digest files are the verifiable audit record." }
+    ],
+    "takeaway": "Object-level S3 API calls are CloudTrail data events, which you must turn on; log file integrity validation proves the logs weren't tampered with.",
+    "trap": "DeleteObject is a data event, not a management event",
+    "services": ["CloudTrail", "S3", "Organizations"]
+  },
+  {
+    "id": "monitoring-011",
+    "domain": "monitoring",
+    "topic": "ALB access logs",
+    "difficulty": "hard",
+    "scenario": "Customers of a SaaS company report intermittent slow responses. The ALB access logs are already delivered to an S3 bucket. The team must find, for the last 7 days, which client IP addresses and request paths had the slowest backend processing, separate from time spent in the load balancer, and it wants to use SQL without provisioning any servers or clusters.",
+    "question": "Which solution meets these requirements with the LEAST operational overhead?",
+    "qualifier": "LEAST operational overhead",
+    "select": 1,
+    "options": [
+      { "text": "Create an Amazon Athena table over the access log prefix, using partition projection on the date, and query it ordered by `target_processing_time`, grouped by `client:port` and request URL.", "correct": true, "why": "Athena queries the logs in S3 serverlessly. The `target_processing_time` field measures the time from the load balancer sending the request to the target until the target starts sending response headers, which isolates backend latency." },
+      { "text": "Run a CloudWatch Logs Insights query on the ALB access logs, sorted by `request_processing_time`.", "correct": false, "why": "ALB access logs are delivered only to S3, not to CloudWatch Logs. `request_processing_time` also measures the load balancer's own time, not the backend's." },
+      { "text": "Load the logs into an Amazon OpenSearch Service domain with an ingestion pipeline and build an OpenSearch Dashboards visualization.", "correct": false, "why": "OpenSearch can analyze these logs, but provisioning a domain and an ingestion pipeline for a one-off 7-day SQL question goes against the no-clusters, least-overhead requirement." },
+      { "text": "Alarm on the ALB `TargetResponseTime` metric and use its dimensions to identify the slowest client IP addresses.", "correct": false, "why": "`TargetResponseTime` is aggregated per load balancer, target group, and AZ. CloudWatch metrics have no client IP or path dimensions, so per-request details come only from the access logs." }
+    ],
+    "takeaway": "ALB access logs live in S3, so query them with Athena; target_processing_time is backend time, while request and response processing times are the load balancer's.",
+    "trap": "ALB access logs are not in CloudWatch Logs",
+    "services": ["ELB", "Athena", "S3"]
+  },
+  {
+    "id": "monitoring-012",
+    "domain": "monitoring",
+    "topic": "VPC Flow Logs",
+    "difficulty": "medium",
+    "scenario": "A security team suspects that malware on some EC2 instances is resolving command-and-control domain names. The VPC uses the Amazon-provided DNS resolver. VPC Flow Logs are enabled for the VPC, but the team cannot find any DNS activity or domain names in them. The team needs the domain names queried and the source instances.",
+    "question": "Which solution meets this requirement?",
+    "qualifier": null,
+    "select": 1,
+    "options": [
+      { "text": "Enable Route 53 Resolver query logging for the VPC and send the logs to CloudWatch Logs or S3.", "correct": true, "why": "Resolver query logging records each DNS query from the VPC, with the queried domain name, record type, response code, and source IP and instance ID." },
+      { "text": "Change the flow log record format to include the `pkt-dst-aws-service` and `flow-direction` fields, which add the DNS query name.", "correct": false, "why": "These are real flow log fields, but flow logs only record IP-level connection metadata, never packet payloads such as domain names. Flow logs also don't capture traffic to the Amazon-provided DNS resolver at all." },
+      { "text": "Turn on VPC Traffic Mirroring for the Amazon DNS resolver's network interface.", "correct": false, "why": "The Amazon-provided resolver (the VPC base +2 address) isn't an ENI you can select as a mirror source, and mirroring would require running packet-analysis appliances, which is far more overhead." },
+      { "text": "Create a CloudWatch Logs metric filter on the flow log group that matches UDP port 53 and extracts the domain name.", "correct": false, "why": "Traffic to the Amazon DNS resolver isn't in flow logs, and even other DNS flows contain no domain names for a filter to extract." }
+    ],
+    "takeaway": "VPC Flow Logs don't capture traffic to the Amazon DNS resolver, the instance metadata service, Amazon Time Sync, or DHCP, and never include payloads; use Resolver query logging for DNS.",
+    "trap": "What VPC Flow Logs do NOT show",
+    "services": ["VPC", "Route 53 Resolver", "CloudWatch Logs"]
+  },
+  {
+    "id": "monitoring-013",
+    "domain": "monitoring",
+    "topic": "CloudWatch Logs data protection",
+    "difficulty": "medium",
+    "scenario": "During an audit, a company discovers that a legacy application occasionally writes full credit card numbers and email addresses into the CloudWatch Logs group `/app/legacy`. Fixing the code will take months. Until then, developers who read the logs must not see this data, while a small incident-response group must still be able to view the original values when necessary.",
+    "question": "Which solution meets these requirements with the LEAST operational overhead?",
+    "qualifier": "LEAST operational overhead",
+    "select": 1,
+    "options": [
+      { "text": "Attach a CloudWatch Logs data protection policy to the log group with the managed data identifiers for credit card numbers and email addresses, and grant `logs:Unmask` only to the incident-response group.", "correct": true, "why": "Data protection policies detect and mask sensitive data as it is ingested, so masked values appear in the console, Logs Insights, and subscriptions. Only principals with logs:Unmask can view the original values." },
+      { "text": "Add a subscription filter that sends events to a Lambda function that redacts card numbers and writes the events back into the same log group.", "correct": false, "why": "The original unmasked events stay in the log group. Writing events back into the same group the filter watches also creates a processing loop." },
+      { "text": "Create a metric filter that matches card number patterns and replaces them with asterisks.", "correct": false, "why": "Metric filters only generate metrics from matching events. They never change or mask the stored log data." },
+      { "text": "Encrypt the log group with a customer managed KMS key and allow only the incident-response group to use the key.", "correct": false, "why": "KMS encryption protects data at rest, but anyone allowed to read the log group sees decrypted plaintext. Restricting the key would block developers from the logs entirely instead of masking specific fields." }
+    ],
+    "takeaway": "CloudWatch Logs data protection policies mask sensitive data at ingestion; only principals with logs:Unmask can see the original values.",
+    "trap": "Metric filters and KMS don't mask log content",
+    "services": ["CloudWatch Logs", "IAM", "KMS"]
+  },
+  {
+    "id": "monitoring-014",
+    "domain": "monitoring",
+    "topic": "Amazon Data Firehose",
+    "difficulty": "hard",
+    "scenario": "An IoT company streams JSON telemetry records into an Amazon Data Firehose stream that delivers to S3. Analysts query the data with Athena and complain about slow, expensive scans of raw JSON. Compliance also requires removing the `deviceOwnerEmail` field from every record before it is stored. The company wants to keep the pipeline serverless and avoid batch jobs.",
+    "question": "Which combination of changes meets these requirements? (Select TWO.)",
+    "qualifier": null,
+    "select": 2,
+    "options": [
+      { "text": "Enable Firehose data transformation with a Lambda function that removes the `deviceOwnerEmail` field and returns each record with result `Ok`.", "correct": true, "why": "Firehose invokes the transformation Lambda function on buffered batches before delivery, so the field is removed in-stream and never lands in S3." },
+      { "text": "Enable Firehose record format conversion to Apache Parquet, using a table schema defined in the AWS Glue Data Catalog.", "correct": true, "why": "Firehose can convert JSON input to Parquet or ORC using a schema from the Glue Data Catalog. Columnar files greatly reduce the data Athena scans and the query cost." },
+      { "text": "Add an S3 event notification on the destination bucket that invokes a Lambda function to rewrite each new object as Parquet without the email field, into the same bucket and prefix.", "correct": false, "why": "Writing the rewritten object back to the same bucket and prefix triggers the notification again, which creates a recursive loop. The raw objects with emails would also be stored, even briefly." },
+      { "text": "Run a nightly AWS Glue ETL job that converts the raw JSON to Parquet and drops the email field.", "correct": false, "why": "It works for the format, but it's the batch job the company wants to avoid, and raw records with emails would sit in S3 until the job runs." },
+      { "text": "Enable Firehose dynamic partitioning with a JQ expression that deletes the `deviceOwnerEmail` field.", "correct": false, "why": "Dynamic partitioning uses JQ expressions to extract partition keys for the S3 prefix. It doesn't change or remove fields from the records." }
+    ],
+    "takeaway": "Firehose can transform records with Lambda and convert JSON to Parquet or ORC via a Glue schema in-stream, so you don't need S3-triggered rewrites, which can loop.",
+    "trap": "S3 event writing back to the same bucket creates a loop",
+    "services": ["Firehose", "Lambda", "Glue", "Athena", "S3"]
+  },
+  {
+    "id": "monitoring-015",
+    "domain": "monitoring",
+    "topic": "CloudWatch Synthetics",
+    "difficulty": "medium",
+    "scenario": "An online bank's login page has failed twice in the last month because of a broken third-party JavaScript dependency, while the servers stayed healthy and every infrastructure alarm stayed green. Real users found the problem first. The bank wants to detect such failures proactively by running the full login flow (load page, submit credentials of a test user, verify the dashboard renders) every 5 minutes and alert the team when the flow fails.",
+    "question": "Which solution meets these requirements with the LEAST operational overhead?",
+    "qualifier": "LEAST operational overhead",
+    "select": 1,
+    "options": [
+      { "text": "Create a CloudWatch Synthetics canary with a scripted browser workflow (Puppeteer, Playwright, or Selenium runtime) on a 5-minute schedule, with test credentials in Secrets Manager, and a CloudWatch alarm on the canary's `SuccessPercent` metric.", "correct": true, "why": "Canaries run headless-browser scripts on a schedule from outside your application, publish `SuccessPercent` and `Duration` metrics, and save screenshots and HAR files that help diagnose front-end failures." },
+      { "text": "Create a Route 53 health check with string matching against the login page URL and an alarm on the health check status.", "correct": false, "why": "A Route 53 health check fetches a URL and can match a string in the first bytes of the response, but it can't run JavaScript, submit a form, or verify that the dashboard renders." },
+      { "text": "Enable CloudWatch RUM on the login page and alarm when JavaScript errors increase.", "correct": false, "why": "RUM monitors real users' sessions, so it still depends on real users hitting the failure. It doesn't proactively run a scripted login every 5 minutes." },
+      { "text": "Schedule a Lambda function every 5 minutes that sends an HTTP GET to the login page and publishes a custom metric if the response is not 200.", "correct": false, "why": "The page returned 200 while broken JavaScript stopped login from working, so a status code check would miss it. Building a headless browser into Lambda by hand is what Synthetics already provides." }
+    ],
+    "takeaway": "Use CloudWatch Synthetics canaries for proactive, scripted user-journey checks; alarm on SuccessPercent.",
+    "trap": "Simple HTTP checks miss front-end failures",
+    "services": ["CloudWatch Synthetics", "CloudWatch", "Secrets Manager", "Route 53"]
+  }
+]

@@ -1,0 +1,351 @@
+[
+  {
+    "id": "sdlc-001",
+    "domain": "sdlc",
+    "topic": "CodePipeline",
+    "difficulty": "hard",
+    "scenario": "A company runs AWS CodePipeline in a shared tooling account (111111111111). The pipeline uses AWS CodeBuild to package an AWS CloudFormation template and must deploy the stack into a production account (222222222222). The pipeline's S3 artifact bucket lives in the tooling account and objects are encrypted with the AWS managed key `aws/s3`. The deploy stage fails because the production account cannot read the input artifact.",
+    "question": "Which combination of steps will allow the pipeline to deploy to the production account? (Select THREE.)",
+    "qualifier": null,
+    "select": 3,
+    "options": [
+      { "text": "Create a customer managed AWS KMS key in the tooling account, set it as the encryption key of the pipeline's artifact store, and grant the production account's deployment roles `kms:Decrypt` and `kms:DescribeKey` in the key policy.", "correct": true, "why": "Cross-account consumers can only decrypt artifacts if the key policy grants them access, and that is only possible with a customer managed key." },
+      { "text": "Add a bucket policy to the artifact bucket that allows the production account's roles to call `s3:GetObject` and `s3:PutObject` on the bucket.", "correct": true, "why": "Cross-account S3 access requires a resource-based bucket policy in addition to the caller's IAM permissions." },
+      { "text": "Create an IAM role in the production account that trusts the tooling account, set it as the `roleArn` of the CloudFormation deploy action, and have the action pass a CloudFormation service role in the production account.", "correct": true, "why": "CodePipeline assumes the action role in the target account to call CloudFormation there; the CloudFormation service role then provisions the resources with production-account permissions." },
+      { "text": "Edit the key policy of the `aws/s3` AWS managed key to allow the production account to decrypt the artifacts.", "correct": false, "why": "Key policies of AWS managed keys cannot be modified and cannot be used cross-account, which is exactly why a customer managed key is required." },
+      { "text": "Enable S3 Cross-Region Replication from the artifact bucket to a bucket in the production account and point the deploy action at the replica.", "correct": false, "why": "Pipeline actions read artifacts from the pipeline's configured artifact store, not an arbitrary replica, and replication does not solve the KMS decryption problem." },
+      { "text": "Share the artifact bucket with the production account by using AWS Resource Access Manager (AWS RAM).", "correct": false, "why": "General purpose S3 buckets are not shareable through AWS RAM; cross-account bucket access is granted with a bucket policy." }
+    ],
+    "takeaway": "Cross-account CodePipeline needs three things: a customer managed KMS key shared via key policy, an artifact bucket policy, and an assumable role in the target account.",
+    "trap": "AWS managed KMS keys cannot be shared cross-account",
+    "services": ["CodePipeline", "KMS", "S3", "IAM", "CloudFormation"]
+  },
+  {
+    "id": "sdlc-002",
+    "domain": "sdlc",
+    "topic": "CodePipeline",
+    "difficulty": "hard",
+    "scenario": "A media company has an AWS CodePipeline pipeline in us-east-1 that builds an application and deploys it with an AWS CloudFormation action in us-east-1. The company now must deploy the same stack to eu-west-1 in the same account, in parallel with the us-east-1 deployment, right after the build stage. The company wants to keep a single pipeline as the only release definition.",
+    "question": "Which solution meets these requirements with the LEAST operational overhead?",
+    "qualifier": "LEAST operational overhead",
+    "select": 1,
+    "options": [
+      { "text": "Add a second CloudFormation deploy action to the existing deploy stage with its `region` field set to eu-west-1, and add an eu-west-1 artifact bucket (and its encryption key) to the pipeline's `artifactStores` configuration.", "correct": true, "why": "CodePipeline supports cross-region actions natively: each action declares a region, and the pipeline copies artifacts to the artifact store configured for that region automatically." },
+      { "text": "Create a second pipeline in eu-west-1 whose source is an S3 bucket populated by S3 Cross-Region Replication from the us-east-1 artifact bucket.", "correct": false, "why": "This works but adds a second pipeline to maintain and makes the release definition no longer single, which increases overhead." },
+      { "text": "Add an AWS Lambda invoke action that calls the CloudFormation API in eu-west-1 to create or update the stack.", "correct": false, "why": "Custom code must handle create versus update, waiting, and error reporting, which a native cross-region CloudFormation action already does." },
+      { "text": "Enable the cross-region read setting on the us-east-1 artifact store so that actions in any Region can read artifacts directly from it.", "correct": false, "why": "No such setting exists; every Region that hosts an action needs its own artifact store bucket in that Region." }
+    ],
+    "takeaway": "Cross-region CodePipeline actions just need a `region` on the action plus an artifact store bucket in every Region used.",
+    "trap": "Made-up feature / works but more overhead",
+    "services": ["CodePipeline", "CloudFormation", "S3"]
+  },
+  {
+    "id": "sdlc-003",
+    "domain": "sdlc",
+    "topic": "CodePipeline",
+    "difficulty": "hard",
+    "scenario": "A company stores its source code in a GitHub repository that is connected to AWS CodePipeline through an AWS CodeConnections connection. Developers push to many branches every day, and a separate pipeline already builds branch pushes. The production release pipeline must start only when a Git tag that matches `v*.*.*` is pushed, and it must never start on ordinary commits.",
+    "question": "Which solution meets these requirements with the LEAST operational overhead?",
+    "qualifier": "LEAST operational overhead",
+    "select": 1,
+    "options": [
+      { "text": "Use a pipeline of type V2 and configure a trigger on the source action with a push filter that includes tags matching `v*.*.*`.", "correct": true, "why": "V2 pipelines support trigger filters on Git tags, branches, and file paths for CodeConnections sources, so the pipeline starts only on matching tag pushes." },
+      { "text": "Create an Amazon EventBridge rule that matches tag push events emitted by the GitHub connection and starts the pipeline.", "correct": false, "why": "GitHub pushes through CodeConnections are not delivered to EventBridge as tag events; EventBridge source events like this exist for CodeCommit, not GitHub." },
+      { "text": "Keep a V1 pipeline and add a first-stage AWS Lambda invoke action that inspects the commit and stops the execution when it is not a tag push.", "correct": false, "why": "This works but runs the pipeline on every push and requires custom code, so it has more overhead and cost than a native trigger filter." },
+      { "text": "Set the `BranchName` of the source action to `refs/tags/v*` so the action only detects tag references.", "correct": false, "why": "The `BranchName` setting takes a single branch name and does not support glob patterns or tag references; tag filtering requires V2 triggers." }
+    ],
+    "takeaway": "Filtering pipeline starts by Git tag, branch glob, or file path requires a V2 pipeline trigger.",
+    "trap": "V1 pipelines cannot filter on tags",
+    "services": ["CodePipeline", "CodeConnections", "EventBridge"]
+  },
+  {
+    "id": "sdlc-004",
+    "domain": "sdlc",
+    "topic": "CodeBuild",
+    "difficulty": "medium",
+    "scenario": "An AWS CodeBuild project installs dependencies from a private npm registry. The registry token is currently stored as a plaintext environment variable in the CodeBuild project, so anyone with read access to the project can see it. The security team has stored the token in AWS Secrets Manager with automatic rotation and requires that the token never appears in the project configuration or in build logs.",
+    "question": "Which solution meets these requirements with the LEAST operational overhead?",
+    "qualifier": "LEAST operational overhead",
+    "select": 1,
+    "options": [
+      { "text": "Reference the secret in the buildspec under `env` > `secrets-manager` (for example `NPM_TOKEN: prod/npm:token`) and grant the CodeBuild service role `secretsmanager:GetSecretValue` on the secret.", "correct": true, "why": "CodeBuild resolves `secrets-manager` references at build start, always gets the current rotated value, and masks the value in build logs." },
+      { "text": "Change the environment variable to type `PARAMETER_STORE` and point it at a `String` parameter that contains the token.", "correct": false, "why": "A `String` parameter is not encrypted and would duplicate the secret outside Secrets Manager, so rotation would no longer flow through." },
+      { "text": "Store the token in an encrypted S3 object and download and decrypt it with the AWS CLI in the `pre_build` phase.", "correct": false, "why": "This works but adds custom handling, a second copy of the secret, and no automatic masking in logs, which is more overhead and less secure." },
+      { "text": "Add the token to the buildspec `env` > `exported-variables` section so it is only available to later pipeline actions.", "correct": false, "why": "Exported variables are meant to be shared and are visible in the pipeline execution history, which exposes the token." }
+    ],
+    "takeaway": "Use buildspec `env.secrets-manager` / `env.parameter-store` for secrets; CodeBuild fetches them at runtime and masks them in logs.",
+    "trap": "Secret visible in exported variables or plaintext env vars",
+    "services": ["CodeBuild", "Secrets Manager", "Systems Manager"]
+  },
+  {
+    "id": "sdlc-005",
+    "domain": "sdlc",
+    "topic": "CodeBuild",
+    "difficulty": "hard",
+    "scenario": "An AWS CodeBuild project runs integration tests against an Amazon RDS database in private subnets of a VPC. The tests also download packages from the public internet. A DevOps engineer configured the project's VPC settings with two public subnets whose route tables point to an internet gateway, and a security group that the database allows. The builds can now reach the database but time out when downloading packages.",
+    "question": "Which change will resolve the issue in the MOST secure way?",
+    "qualifier": "MOST secure",
+    "select": 1,
+    "options": [
+      { "text": "Configure the project to use private subnets whose route tables send `0.0.0.0/0` to a NAT gateway in a public subnet, keeping the existing security group.", "correct": true, "why": "CodeBuild network interfaces in a VPC never receive public IP addresses, so internet access must go through a NAT gateway from private subnets." },
+      { "text": "Enable auto-assign public IPv4 addresses on the two public subnets used by the project.", "correct": false, "why": "CodeBuild-created ENIs do not get public IPs even when the subnet setting is enabled, so the builds still cannot reach the internet." },
+      { "text": "Allocate an Elastic IP address and associate it with the network interface that CodeBuild creates for each build.", "correct": false, "why": "The ENIs are created and deleted by CodeBuild per build and are not meant to be managed; this cannot be done reliably and is not supported." },
+      { "text": "Remove the VPC configuration from the project and make the RDS database publicly accessible with a security group rule for CodeBuild IP ranges.", "correct": false, "why": "Exposing the database publicly is far less secure than keeping it private and routing outbound traffic through a NAT gateway." }
+    ],
+    "takeaway": "CodeBuild in a VPC must use private subnets with a NAT gateway for internet access; public subnets do not work.",
+    "trap": "Public subnets do not give CodeBuild internet access",
+    "services": ["CodeBuild", "VPC", "RDS"]
+  },
+  {
+    "id": "sdlc-006",
+    "domain": "sdlc",
+    "topic": "CodeBuild",
+    "difficulty": "medium",
+    "scenario": "A team builds a Java application with Maven in AWS CodeBuild. Each build spends about 6 minutes downloading the same dependencies into `/root/.m2`. Builds run only three or four times a day, at unpredictable times. The team wants to cut build time without maintaining additional infrastructure.",
+    "question": "Which solution meets these requirements with the LEAST operational overhead?",
+    "qualifier": "LEAST operational overhead",
+    "select": 1,
+    "options": [
+      { "text": "Enable Amazon S3 caching on the project and add `cache: paths: - '/root/.m2/**/*'` to the buildspec.", "correct": true, "why": "An S3 cache is stored durably and restored on any build host, so it helps even when builds are hours apart." },
+      { "text": "Enable local caching with the `LOCAL_CUSTOM_CACHE` mode and list `/root/.m2/**/*` in the buildspec cache paths.", "correct": false, "why": "Local caching is best-effort and only reused when a later build lands on the same host shortly after, so infrequent builds rarely benefit." },
+      { "text": "Build a custom build image that already contains the dependencies, push it to Amazon ECR, and rebuild the image whenever dependencies change.", "correct": false, "why": "This works but adds an image pipeline to maintain whenever dependencies change, which is more overhead than a cache setting." },
+      { "text": "Switch the project to a larger compute type so the dependency download completes faster.", "correct": false, "why": "The bottleneck is repeated network downloads, not CPU or memory, and larger compute costs more without removing the downloads." }
+    ],
+    "takeaway": "Use S3 caching for infrequent builds; local caching only helps builds that run close together on the same host.",
+    "trap": "Local cache is best-effort",
+    "services": ["CodeBuild", "S3"]
+  },
+  {
+    "id": "sdlc-007",
+    "domain": "sdlc",
+    "topic": "CodeBuild",
+    "difficulty": "medium",
+    "scenario": "A Python team runs `pytest` in AWS CodeBuild. Managers want to see pass/fail counts per test case and code coverage trends across builds in the AWS console, without operating any additional reporting tool. The tests already write a JUnit XML file and a Cobertura XML coverage file to the `reports/` directory.",
+    "question": "What should a DevOps engineer do to meet these requirements?",
+    "qualifier": null,
+    "select": 1,
+    "options": [
+      { "text": "Add a `reports` section to the buildspec that defines one report group with `file-format: JUNITXML` and one with `file-format: COBERTURAXML`, both with `base-directory: reports`, and allow the service role to create and update report groups and reports.", "correct": true, "why": "CodeBuild test and coverage reports are defined in the buildspec `reports` section and appear in report groups with history and trends in the console." },
+      { "text": "Upload the XML files as build artifacts to S3 and enable the S3 test report view on the bucket.", "correct": false, "why": "S3 has no test report view; the files would just be objects without any parsing or trends." },
+      { "text": "Stream the XML files to Amazon CloudWatch Logs and build CloudWatch Logs Insights queries for pass/fail counts.", "correct": false, "why": "This requires custom parsing and dashboards, which is additional tooling that CodeBuild reports provide natively." },
+      { "text": "Associate the repository with Amazon CodeGuru Reviewer to display test results and coverage.", "correct": false, "why": "CodeGuru Reviewer analyzes code for defects; it does not ingest test results or coverage files." }
+    ],
+    "takeaway": "CodeBuild report groups (buildspec `reports`) show test results (JUnit, NUnit, TestNG, Cucumber...) and coverage (JaCoCo, Cobertura, Clover, SimpleCov).",
+    "trap": "Service that exists but does a different job",
+    "services": ["CodeBuild"]
+  },
+  {
+    "id": "sdlc-008",
+    "domain": "sdlc",
+    "topic": "SAM",
+    "difficulty": "hard",
+    "scenario": "A company deploys an AWS Lambda function with an AWS SAM template. For every release, 10% of traffic must go to the new version for 10 minutes and then the remaining 90% must shift at once. A validation function must run integration checks before any production traffic reaches the new version, and the deployment must roll back automatically if a CloudWatch alarm on function errors enters the ALARM state.",
+    "question": "Which SAM configuration meets these requirements?",
+    "qualifier": null,
+    "select": 1,
+    "options": [
+      { "text": "Set `AutoPublishAlias: live` and a `DeploymentPreference` with `Type: Canary10Percent10Minutes`, `Alarms` listing the error alarm, and `Hooks: PreTraffic` referencing the validation function.", "correct": true, "why": "SAM publishes a version to the alias and creates a CodeDeploy deployment; canary shifts 10% then the rest, PreTraffic maps to BeforeAllowTraffic, and alarms trigger automatic rollback." },
+      { "text": "Set `AutoPublishAlias: live` and a `DeploymentPreference` with `Type: Linear10PercentEvery10Minutes`, `Alarms` listing the error alarm, and `Hooks: PreTraffic` referencing the validation function.", "correct": false, "why": "Linear shifts 10% every 10 minutes in ten increments (about 100 minutes), not 10% followed by the remaining 90% at once." },
+      { "text": "Set `AutoPublishAlias: live` and a `DeploymentPreference` with `Type: Canary10Percent10Minutes`, `Alarms` listing the error alarm, and `Hooks: PostTraffic` referencing the validation function.", "correct": false, "why": "PostTraffic (AfterAllowTraffic) runs after all traffic has shifted, so the checks would not run before production traffic reaches the new version." },
+      { "text": "Omit `AutoPublishAlias` and add a `DeploymentPreference` with `Type: Canary10Percent10Minutes`, `Alarms`, and `Hooks: PreTraffic`; SAM shifts traffic on `$LATEST`.", "correct": false, "why": "Gradual deployments require an alias and published versions; traffic cannot be shifted on `$LATEST`." }
+    ],
+    "takeaway": "SAM gradual deploys = AutoPublishAlias + DeploymentPreference (Canary/Linear/AllAtOnce) + Alarms + PreTraffic/PostTraffic hooks.",
+    "trap": "Canary vs linear confusion / wrong hook",
+    "services": ["SAM", "Lambda", "CodeDeploy", "CloudWatch"]
+  },
+  {
+    "id": "sdlc-009",
+    "domain": "sdlc",
+    "topic": "CodeDeploy",
+    "difficulty": "hard",
+    "scenario": "A company runs an Amazon ECS service on AWS Fargate behind an Application Load Balancer and deploys it with AWS CodeDeploy blue/green deployments. The company wants automated integration tests to run against the replacement (green) task set before any production traffic is shifted to it. If the tests fail, the deployment must roll back automatically.",
+    "question": "Which combination of steps meets these requirements? (Select TWO.)",
+    "qualifier": null,
+    "select": 2,
+    "options": [
+      { "text": "Add a test listener (for example on port 8443) to the ALB and specify it as the test traffic route in the deployment group's load balancer configuration.", "correct": true, "why": "The test listener routes to the green target group before production traffic shifts, giving the tests an endpoint for the new task set." },
+      { "text": "Create an AWS Lambda function that runs the tests against the test listener and reports `Failed` or `Succeeded` with `PutLifecycleEventHookExecutionStatus`, and reference it in the `AfterAllowTestTraffic` hook of the AppSpec file.", "correct": true, "why": "ECS AppSpec hooks are Lambda functions; `AfterAllowTestTraffic` runs once test traffic reaches green, and a `Failed` status stops and rolls back the deployment." },
+      { "text": "Add a shell script under the `ValidateService` hook in the AppSpec file that calls the new tasks with `curl`.", "correct": false, "why": "`ValidateService` and script-based hooks exist only for EC2/on-premises deployments; ECS hooks invoke Lambda functions." },
+      { "text": "Use the `CodeDeployDefault.ECSCanary10Percent5Minutes` configuration with a CloudWatch alarm on 5XX errors.", "correct": false, "why": "A canary sends real production traffic to green before any tests run, which violates the requirement." },
+      { "text": "Add the tests to an `ApplicationStop` hook so they run before the original task set is stopped.", "correct": false, "why": "`ApplicationStop` is an EC2/on-premises lifecycle event and does not exist for ECS deployments." }
+    ],
+    "takeaway": "ECS blue/green: test listener + Lambda in AfterAllowTestTraffic (or BeforeAllowTraffic) to gate production traffic.",
+    "trap": "EC2 lifecycle hooks used on ECS",
+    "services": ["CodeDeploy", "ECS", "Fargate", "Elastic Load Balancing", "Lambda"]
+  },
+  {
+    "id": "sdlc-010",
+    "domain": "sdlc",
+    "topic": "CodeDeploy",
+    "difficulty": "hard",
+    "scenario": "A company uses AWS CodeDeploy in-place deployments to a fleet of Amazon EC2 instances. A recent revision shipped an `ApplicationStop` script that hangs. The team fixed the script in a new revision, but every new deployment fails at the `ApplicationStop` lifecycle event with a `ScriptTimedOut` error on all instances.",
+    "question": "What should a DevOps engineer do to deploy the fixed revision with the FEWEST changes?",
+    "qualifier": "FEWEST changes",
+    "select": 1,
+    "options": [
+      { "text": "Redeploy the fixed revision with the option to not fail the deployment when the `ApplicationStop` lifecycle event fails (`--ignore-application-stop-failures`).", "correct": true, "why": "`ApplicationStop` runs the script from the last successfully deployed revision, so the broken script keeps running until that event's failure is ignored once." },
+      { "text": "Increase the `timeout` value for the `ApplicationStop` hook in the AppSpec file of the fixed revision and redeploy.", "correct": false, "why": "The `ApplicationStop` event uses the AppSpec file and scripts of the previously deployed revision, so changes in the new revision have no effect on it." },
+      { "text": "Restart the CodeDeploy agent on all instances and redeploy the fixed revision.", "correct": false, "why": "Restarting the agent does not change which `ApplicationStop` script runs; the same hanging script runs again." },
+      { "text": "Change the deployment configuration from `CodeDeployDefault.OneAtATime` to `CodeDeployDefault.AllAtOnce` and redeploy.", "correct": false, "why": "The deployment configuration controls how many instances deploy at once, not which scripts run, so every instance still times out." }
+    ],
+    "takeaway": "ApplicationStop runs the previous revision's script; fix a broken one by deploying with ignore-application-stop-failures.",
+    "trap": "ApplicationStop uses the OLD revision",
+    "services": ["CodeDeploy", "EC2"]
+  },
+  {
+    "id": "sdlc-011",
+    "domain": "sdlc",
+    "topic": "CodeDeploy",
+    "difficulty": "medium",
+    "scenario": "A company deploys an application to 10 Amazon EC2 instances with AWS CodeDeploy in-place deployments. Load tests show the application needs at least 8 instances serving traffic to handle peak load, and deployments can happen at peak time. The company wants deployments to finish as quickly as possible.",
+    "question": "Which deployment configuration meets these requirements?",
+    "qualifier": null,
+    "select": 1,
+    "options": [
+      { "text": "Create a custom deployment configuration with a minimum healthy hosts value of 80% (`FLEET_PERCENT`).", "correct": true, "why": "With 80% minimum healthy hosts, CodeDeploy updates two instances at a time while keeping 8 healthy, which is the fastest option that satisfies the capacity floor." },
+      { "text": "Use `CodeDeployDefault.OneAtATime`.", "correct": false, "why": "It keeps 9 instances healthy and meets the capacity floor, but deploying one instance at a time is slower than necessary." },
+      { "text": "Use `CodeDeployDefault.HalfAtATime`.", "correct": false, "why": "HalfAtATime keeps only 50% (5 instances) healthy, below the 8-instance requirement." },
+      { "text": "Use `CodeDeployDefault.AllAtOnce`.", "correct": false, "why": "AllAtOnce can take every instance out of service at the same time, leaving no capacity during deployment." }
+    ],
+    "takeaway": "Minimum healthy hosts sets deployment speed vs capacity; create a custom config when the predefined ones are too slow or too aggressive.",
+    "trap": "Works but not the fastest",
+    "services": ["CodeDeploy", "EC2"]
+  },
+  {
+    "id": "sdlc-012",
+    "domain": "sdlc",
+    "topic": "CodeDeploy",
+    "difficulty": "hard",
+    "scenario": "A company uses AWS CodeDeploy to deploy to an Auto Scaling group of Amazon EC2 instances. A CloudWatch alarm watches the Application Load Balancer's HTTP 5XX count. The company wants CodeDeploy to stop a deployment automatically and return to the last known good revision when this alarm fires during the deployment, and also when a deployment fails for any other reason.",
+    "question": "Which combination of steps meets these requirements with the LEAST operational overhead? (Select TWO.)",
+    "qualifier": "LEAST operational overhead",
+    "select": 2,
+    "options": [
+      { "text": "Add the CloudWatch alarm to the alarm configuration of the CodeDeploy deployment group.", "correct": true, "why": "CodeDeploy monitors alarms attached to the deployment group and stops the deployment when one goes into ALARM." },
+      { "text": "Enable automatic rollback on the deployment group for both 'when a deployment fails' and 'when alarm thresholds are met'.", "correct": true, "why": "With these settings CodeDeploy automatically redeploys the last known good revision as a new deployment after a failure or alarm stop." },
+      { "text": "Create an Amazon EventBridge rule for the alarm state change that invokes an AWS Lambda function calling `StopDeployment` with `autoRollbackEnabled` set to true.", "correct": false, "why": "This works but adds custom code and infrastructure for behavior CodeDeploy provides natively in the deployment group." },
+      { "text": "Configure CloudFormation rollback triggers with the alarm on the deployment group resource.", "correct": false, "why": "Rollback triggers act on CloudFormation stack operations, not on CodeDeploy deployments." },
+      { "text": "Add a `ValidateService` hook script that polls the alarm and exits with a non-zero code while it is in ALARM.", "correct": false, "why": "It only checks at one lifecycle point per instance and needs custom scripting; the native alarm configuration watches the whole deployment." }
+    ],
+    "takeaway": "CodeDeploy rollback = alarms on the deployment group + auto-rollback settings; a rollback is a new deployment of the last good revision.",
+    "trap": "Works but more overhead",
+    "services": ["CodeDeploy", "CloudWatch", "EC2 Auto Scaling"]
+  },
+  {
+    "id": "sdlc-013",
+    "domain": "sdlc",
+    "topic": "CodeArtifact",
+    "difficulty": "hard",
+    "scenario": "A company builds Node.js applications in AWS CodeBuild projects that run in private VPC subnets with no internet access. The builds must install public packages from the npmjs registry and publish internal packages, and every public package version used must be cached inside AWS so builds keep working if the public registry is unavailable. The VPC must not get a route to the internet.",
+    "question": "Which combination of steps meets these requirements? (Select THREE.)",
+    "qualifier": null,
+    "select": 3,
+    "options": [
+      { "text": "Create an AWS CodeArtifact domain with an internal repository whose upstream repository has an external connection to `public:npmjs`, and run `aws codeartifact login --tool npm` in the buildspec.", "correct": true, "why": "Packages pulled through the upstream are fetched from npmjs by CodeArtifact and retained in the repository, and internal packages can be published to the same repository." },
+      { "text": "Create interface VPC endpoints for `com.amazonaws.<region>.codeartifact.api` and `com.amazonaws.<region>.codeartifact.repositories`.", "correct": true, "why": "The `api` endpoint is used for operations like `GetAuthorizationToken`, and the `repositories` endpoint serves package manager traffic." },
+      { "text": "Create an Amazon S3 gateway VPC endpoint for the Region.", "correct": true, "why": "CodeArtifact stores package assets in S3, so private builds need S3 access to download them." },
+      { "text": "Add a NAT gateway so CodeBuild can reach npmjs when a package is not yet cached.", "correct": false, "why": "This gives the VPC a route to the internet, which is not allowed, and is unnecessary because CodeArtifact fetches public packages itself." },
+      { "text": "Store the npm packages in an Amazon ECR repository and point npm at the ECR registry URL.", "correct": false, "why": "ECR is a container image and OCI artifact registry; it does not implement the npm registry protocol." },
+      { "text": "Configure the npm client to use the CodeArtifact public npm mirror endpoint, which needs no repository.", "correct": false, "why": "CodeArtifact has no repository-less public mirror endpoint; public packages are reached through a repository with an external connection." }
+    ],
+    "takeaway": "CodeArtifact without internet: external connection on an upstream repo + codeartifact.api and codeartifact.repositories endpoints + S3 gateway endpoint.",
+    "trap": "Forgetting the S3 gateway endpoint",
+    "services": ["CodeArtifact", "CodeBuild", "VPC", "S3"]
+  },
+  {
+    "id": "sdlc-014",
+    "domain": "sdlc",
+    "topic": "ECR",
+    "difficulty": "hard",
+    "scenario": "A company keeps all container images in Amazon ECR private repositories in a central shared-services account. Amazon ECS tasks in several workload accounts must pull images from these repositories. The security team requires least-privilege access, no copies of images in the workload accounts, and no public exposure.",
+    "question": "Which solution meets these requirements?",
+    "qualifier": null,
+    "select": 1,
+    "options": [
+      { "text": "Add a repository policy in the central account that allows `ecr:BatchGetImage`, `ecr:GetDownloadUrlForLayer`, and `ecr:BatchCheckLayerAvailability` for the workload accounts' task execution roles, and allow those roles `ecr:GetAuthorizationToken` plus the same pull actions on the central repositories in their IAM policies.", "correct": true, "why": "Cross-account pulls need both the resource-based repository policy and the identity-based policy on the task execution role; `GetAuthorizationToken` is a registry-level action granted in IAM." },
+      { "text": "Configure ECR cross-account replication from the central registry to each workload account's registry.", "correct": false, "why": "Replication creates copies of the images in each workload account, which the requirement forbids." },
+      { "text": "Share the ECR repositories with the workload accounts by using AWS Resource Access Manager (AWS RAM).", "correct": false, "why": "ECR repositories are not shareable through AWS RAM; cross-account access is granted with repository policies." },
+      { "text": "Grant only `ecr:GetAuthorizationToken` to the workload accounts in the repository policy, because the token authorizes all subsequent pulls.", "correct": false, "why": "The authorization token only authenticates the Docker client; the image and layer pull actions must still be allowed explicitly." }
+    ],
+    "takeaway": "Cross-account ECR pull = repository policy (pull actions) + IAM policy on the puller (GetAuthorizationToken + pull actions).",
+    "trap": "RAM does not share ECR repos",
+    "services": ["ECR", "ECS", "IAM"]
+  },
+  {
+    "id": "sdlc-015",
+    "domain": "sdlc",
+    "topic": "ECR",
+    "difficulty": "hard",
+    "scenario": "A company stores hundreds of container images in Amazon ECR. The security team needs vulnerability scanning of both operating system packages and application language packages (such as Python and Java libraries). Images must be rescanned automatically when new CVEs are published, not only when pushed, and the team must be notified by email of any CRITICAL finding.",
+    "question": "Which solution meets these requirements with the LEAST operational overhead?",
+    "qualifier": "LEAST operational overhead",
+    "select": 1,
+    "options": [
+      { "text": "Turn on ECR enhanced scanning (Amazon Inspector) for the registry with continuous scanning, and create an Amazon EventBridge rule for `aws.inspector2` finding events with severity CRITICAL that targets an Amazon SNS topic with email subscriptions.", "correct": true, "why": "Enhanced scanning uses Amazon Inspector to scan OS and language packages and rescans continuously as new CVEs appear; findings are emitted to EventBridge." },
+      { "text": "Turn on basic scanning with scan on push and create an EventBridge rule for ECR image scan events that targets an SNS topic.", "correct": false, "why": "Basic scanning focuses on OS packages and only scans on push or on demand, so it neither covers language packages nor rescans automatically." },
+      { "text": "Run a nightly AWS CodeBuild job that pulls every image, scans it with an open-source scanner, and publishes CRITICAL results to SNS.", "correct": false, "why": "This could work but requires building and maintaining a custom scanning pipeline, which is much more overhead than enhanced scanning." },
+      { "text": "Enable Amazon GuardDuty ECS Runtime Monitoring and subscribe the team to GuardDuty findings.", "correct": false, "why": "GuardDuty runtime monitoring detects threats in running workloads; it does not scan images in ECR for package vulnerabilities." }
+    ],
+    "takeaway": "ECR enhanced scanning = Inspector, OS + language packages, continuous rescans; basic scanning = OS packages, on push/manual.",
+    "trap": "Basic vs enhanced scanning",
+    "services": ["ECR", "Inspector", "EventBridge", "SNS"]
+  },
+  {
+    "id": "sdlc-016",
+    "domain": "sdlc",
+    "topic": "Elastic Beanstalk",
+    "difficulty": "hard",
+    "scenario": "A company runs a web application on an AWS Elastic Beanstalk load-balanced environment with an Application Load Balancer. For each release, the company wants to deploy the new version to a fresh set of instances so a bad release never touches the running instances, keep full capacity throughout, and send 10% of client traffic to the new version for 15 minutes before shifting all traffic. The environment URL must not change.",
+    "question": "Which deployment policy meets these requirements?",
+    "qualifier": null,
+    "select": 1,
+    "options": [
+      { "text": "Traffic splitting with a 10% traffic split and a 15-minute evaluation time.", "correct": true, "why": "Traffic splitting launches new instances in a temporary Auto Scaling group, routes the chosen percentage of traffic through the same load balancer for the evaluation period, then moves all traffic and terminates the old instances." },
+      { "text": "Immutable.", "correct": false, "why": "Immutable uses fresh instances and full capacity, but it does not send a configurable percentage of traffic for an evaluation period." },
+      { "text": "Rolling with additional batch.", "correct": false, "why": "It keeps full capacity, but after the extra batch it deploys onto existing instances in place, so a bad release can affect running instances." },
+      { "text": "Blue/green deployment by cloning the environment and swapping environment URLs.", "correct": false, "why": "A CNAME swap moves all traffic at once (subject to DNS caching) and involves a second environment rather than a percentage split within the same environment." }
+    ],
+    "takeaway": "Need a percentage canary inside the same Beanstalk environment on new instances? Traffic splitting.",
+    "trap": "Immutable vs traffic splitting",
+    "services": ["Elastic Beanstalk", "Elastic Load Balancing", "EC2 Auto Scaling"]
+  },
+  {
+    "id": "sdlc-017",
+    "domain": "sdlc",
+    "topic": "Elastic Beanstalk",
+    "difficulty": "hard",
+    "scenario": "A company runs a Node.js application on an AWS Elastic Beanstalk environment on an Amazon Linux 2 platform branch. An Amazon RDS DB instance was created as part of the environment configuration. The company must move to an Amazon Linux 2023 platform branch with the ability to roll back instantly, and the production data in the database must be preserved and remain in use by the new version.",
+    "question": "Which combination of steps meets these requirements? (Select TWO.)",
+    "qualifier": null,
+    "select": 2,
+    "options": [
+      { "text": "Decouple the RDS DB instance from the environment (with the database deletion policy set to retain) and configure the application to read the connection details from environment properties or AWS Secrets Manager.", "correct": true, "why": "A database coupled to an environment shares its lifecycle; decoupling keeps the DB independent so both the old and new environments can use it." },
+      { "text": "Create a new environment on the Amazon Linux 2023 platform branch pointing at the same database, test it, and then use Swap environment URLs; swap back to roll back.", "correct": true, "why": "Changing platform branches is done with a blue/green deployment, and the CNAME swap is reversible for fast rollback." },
+      { "text": "Clone the existing environment with the latest platform version and swap environment URLs.", "correct": false, "why": "Cloning copies the coupled database configuration and creates a new, empty DB instance, and a clone stays on the same platform branch." },
+      { "text": "Run a rolling with additional batch deployment and select the Amazon Linux 2023 platform in the same environment.", "correct": false, "why": "Deployment policies deploy application versions; moving to a different platform branch should be done in a new environment, and this offers no instant rollback." },
+      { "text": "Run an immutable deployment, which keeps the RDS DB instance and replaces only the EC2 instances.", "correct": false, "why": "Immutable deploys a new application version on new instances in the same environment; it does not migrate platform branches or provide an instant swap back." }
+    ],
+    "takeaway": "Platform branch changes = blue/green with Swap environment URLs; decouple RDS from the environment first so the data survives.",
+    "trap": "Cloning an environment clones its coupled database",
+    "services": ["Elastic Beanstalk", "RDS", "Secrets Manager"]
+  },
+  {
+    "id": "sdlc-018",
+    "domain": "sdlc",
+    "topic": "CodePipeline",
+    "difficulty": "hard",
+    "scenario": "A company's AWS CodePipeline pipeline deploys an AWS CloudFormation stack to a staging environment, runs automated integration tests in AWS CodeBuild, and then waits at a manual approval action before deploying to production. The staging stack's URL changes with every deployment and is exposed as a stack output named `WebsiteURL`. Approvers must receive the current staging URL in the approval request so they can review the site before approving.",
+    "question": "Which solution meets these requirements with the LEAST operational overhead?",
+    "qualifier": "LEAST operational overhead",
+    "select": 1,
+    "options": [
+      { "text": "Assign a variable namespace (for example `StagingVars`) to the staging CloudFormation action and set the approval action's URL for review to `#{StagingVars.WebsiteURL}`, with an Amazon SNS topic configured on the approval action.", "correct": true, "why": "CloudFormation deploy actions expose stack outputs as action variables, and the approval action can reference them in its review URL and custom data." },
+      { "text": "Add an AWS Lambda invoke action that reads the stack outputs and emails the URL to the approvers through Amazon SES before the approval action.", "correct": false, "why": "This works but adds custom code and email infrastructure for something pipeline variables provide natively." },
+      { "text": "Store the URL in AWS Systems Manager Parameter Store and reference it in the approval action with `{{resolve:ssm:/staging/url}}`.", "correct": false, "why": "The `{{resolve:...}}` dynamic reference syntax is a CloudFormation template feature; pipeline action configuration uses `#{namespace.variable}`." },
+      { "text": "Add a CodeBuild action that runs `aws cloudformation describe-stacks` and exports the URL with `exported-variables`, then reference that variable in the approval action.", "correct": false, "why": "This works but adds an extra build action, runtime, and cost when the CloudFormation action already exposes the output as a variable." }
+    ],
+    "takeaway": "CloudFormation action outputs become pipeline variables via a namespace; reference them with #{Namespace.Output}.",
+    "trap": "Works but more overhead",
+    "services": ["CodePipeline", "CloudFormation", "CodeBuild", "SNS"]
+  }
+]

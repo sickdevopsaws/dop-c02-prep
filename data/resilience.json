@@ -1,0 +1,292 @@
+[
+  {
+    "id": "resilience-001",
+    "domain": "resilience",
+    "topic": "Aurora Global Database",
+    "difficulty": "hard",
+    "scenario": "A fintech company runs its ledger on an Aurora PostgreSQL global database with the primary cluster in us-east-1 and a secondary cluster in us-west-2. Regulators require a semiannual DR drill in which the writer role moves to us-west-2 for one week and then moves back. The drill must not lose any committed transactions, and the team does not want to rebuild replication or re-create clusters after each move. Both Regions are healthy during the drill.",
+    "question": "Which approach meets these requirements with the LEAST operational overhead?",
+    "qualifier": "LEAST operational overhead",
+    "select": 1,
+    "options": [
+      { "text": "Run a global database switchover (`switchover-global-cluster`) to make the us-west-2 cluster the primary, then run another switchover back to us-east-1 after the drill.", "correct": true, "why": "Switchover (formerly called managed planned failover) waits for the secondary to fully catch up, so RPO is zero, and it reverses the roles while keeping the global database topology intact. The old primary becomes a secondary automatically, so nothing has to be rebuilt." },
+      { "text": "Detach the us-west-2 cluster from the global database with `remove-from-global-cluster`, promote it to a standalone writer, and add us-east-1 back as a secondary after the drill.", "correct": false, "why": "Detach-and-promote is the manual path for an unplanned Regional outage. It breaks replication, so the global database has to be rebuilt afterward, and writes that hadn't replicated yet can be lost. That is far more overhead than a switchover." },
+      { "text": "Run `failover-global-cluster` with the `--allow-data-loss` option to move the writer to us-west-2, then repeat the command to move it back.", "correct": false, "why": "The allow-data-loss failover is meant for unplanned outages when the primary Region is impaired. It does not wait for replication to catch up, so committed transactions can be lost, which breaks the zero-data-loss requirement." },
+      { "text": "Create a cross-Region read replica of the primary cluster in us-west-2, promote it during the drill, and use AWS DMS to sync changes back to us-east-1 afterward.", "correct": false, "why": "This rebuilds what the global database already does natively, and it adds DMS tasks and a one-way promotion. The team would have to rebuild replication after every drill." }
+    ],
+    "takeaway": "For planned Aurora Global Database Region moves, use switchover: RPO is zero and the topology is preserved. Use failover with allow-data-loss, or detach-and-promote, only for real outages.",
+    "trap": "Using the unplanned-outage procedure for a planned drill",
+    "services": ["Aurora", "RDS"]
+  },
+  {
+    "id": "resilience-002",
+    "domain": "resilience",
+    "topic": "DR strategies",
+    "difficulty": "hard",
+    "scenario": "A logistics company runs an order-management application in eu-west-1 on EC2 instances in an Auto Scaling group behind an ALB, with data in Amazon Aurora MySQL. The business has set a disaster recovery objective of RTO 1 hour and RPO under 1 minute for a full Regional outage. Finance asks that as little as possible run in the DR Region until a disaster happens.",
+    "question": "Which DR strategy meets the objectives in the MOST cost-effective way?",
+    "qualifier": "MOST cost-effective",
+    "select": 1,
+    "options": [
+      { "text": "Pilot light: add an Aurora Global Database secondary cluster in eu-central-1, pre-provision the ALB and an Auto Scaling group with desired capacity 0 from a replicated AMI, and scale out and repoint DNS during a disaster.", "correct": true, "why": "Continuous storage-level replication to the secondary cluster typically keeps RPO around a second, and only the data tier runs all the time. Scaling a pre-built Auto Scaling group from 0 and promoting the database fits comfortably within a 1-hour RTO." },
+      { "text": "Backup and restore: use AWS Backup to copy daily Aurora snapshots and AMIs to eu-central-1, and restore the full stack with CloudFormation during a disaster.", "correct": false, "why": "It is the cheapest option, but daily snapshot copies give an RPO measured in hours, and even continuous backups are not replicated across Regions in near real time. It fails the sub-minute RPO requirement." },
+      { "text": "Warm standby: run a scaled-down but fully functional copy of the application in eu-central-1 with a few always-on EC2 instances and an Aurora Global Database secondary, then scale up during a disaster.", "correct": false, "why": "Warm standby meets the RTO and RPO, but it keeps compute running all the time. The 1-hour RTO leaves enough time to start compute from zero, so paying for idle instances is unnecessary." },
+      { "text": "Multi-site active-active: serve production traffic from both Regions with Route 53 latency routing and Aurora Global Database write forwarding.", "correct": false, "why": "Active-active gives near-zero RTO but costs the most, because both Regions run at production scale. That is overkill for a 1-hour RTO." }
+    ],
+    "takeaway": "Pick the cheapest DR strategy that still meets both RTO and RPO: backup/restore means hours, pilot light means tens of minutes with live data, warm standby means minutes, and active-active means near zero.",
+    "trap": "Over-engineering with warm standby or active-active when pilot light meets the objectives",
+    "services": ["Aurora", "EC2 Auto Scaling", "Route 53", "AWS Backup"]
+  },
+  {
+    "id": "resilience-003",
+    "domain": "resilience",
+    "topic": "RDS Multi-AZ",
+    "difficulty": "medium",
+    "scenario": "A SaaS company runs Amazon RDS for PostgreSQL as a Single-AZ instance. Read-heavy reporting queries regularly slow down the transactional workload. The company needs automatic failover to another Availability Zone with no committed transactions lost, and it wants to offload reporting reads to the same infrastructure that provides the high availability. The team does not want to migrate to a different database engine.",
+    "question": "Which deployment option meets these requirements with the LEAST operational overhead?",
+    "qualifier": "LEAST operational overhead",
+    "select": 1,
+    "options": [
+      { "text": "Convert the database to an RDS Multi-AZ DB cluster deployment, which has a writer and two readable standby instances in three AZs, and point reporting at the cluster reader endpoint.", "correct": true, "why": "A Multi-AZ DB cluster uses semisynchronous replication to two standbys that also serve reads through the reader endpoint. Failover is automatic and typically completes in under 35 seconds, so one feature covers both HA and read offload." },
+      { "text": "Convert the database to a Multi-AZ DB instance deployment and point reporting queries at the standby instance's endpoint.", "correct": false, "why": "In a Multi-AZ DB instance deployment, the standby cannot be read. It exists only for failover, and there is no endpoint to query it." },
+      { "text": "Create two cross-AZ read replicas, point reporting at them, and configure RDS to promote a replica automatically if the primary fails.", "correct": false, "why": "Read replicas replicate asynchronously and RDS never promotes them automatically. Promotion is a manual or scripted action, and transactions that hadn't replicated yet can be lost." },
+      { "text": "Keep the Single-AZ instance, put Amazon RDS Proxy in front of it, and enable the proxy's read/write splitting to send reporting queries to a standby.", "correct": false, "why": "RDS Proxy pools connections and can shorten failover time, but it does not create standbys or make Single-AZ highly available. Read routing still needs real reader instances behind it." }
+    ],
+    "takeaway": "The standby in a Multi-AZ DB instance deployment cannot be read. A Multi-AZ DB cluster (MySQL/PostgreSQL) gives two readable standbys and fast automatic failover.",
+    "trap": "Assuming the Multi-AZ instance standby can serve reads",
+    "services": ["RDS", "RDS Proxy"]
+  },
+  {
+    "id": "resilience-004",
+    "domain": "resilience",
+    "topic": "DynamoDB global tables",
+    "difficulty": "medium",
+    "scenario": "A gaming company stores player profiles in a DynamoDB table in us-east-1. It is launching in Europe and wants players there to read and write their profiles with single-digit-millisecond latency from eu-west-1, while US players keep using us-east-1. If one Region fails, the other Region must keep accepting writes for all players. For the rare simultaneous update to the same profile, the company accepts last-writer-wins conflict resolution.",
+    "question": "Which solution meets these requirements with the LEAST operational overhead?",
+    "qualifier": "LEAST operational overhead",
+    "select": 1,
+    "options": [
+      { "text": "Add an eu-west-1 replica to the existing table to turn it into a DynamoDB global table, and have each regional application stack use its local replica.", "correct": true, "why": "Global tables give fully managed multi-active replication, so writes are accepted in every replica Region. Concurrent updates resolve with last writer wins, which the company accepts, and there is no replication code to maintain." },
+      { "text": "Create a separate table in eu-west-1 and enable DynamoDB Streams on both tables, with Lambda functions that copy each change to the other Region.", "correct": false, "why": "This can work, but the team has to own the replication code, retries, loop prevention, and conflict handling. That is the overhead global tables remove." },
+      { "text": "Create a DynamoDB Accelerator (DAX) global cluster spanning both Regions so that European writes are cached locally and flushed to us-east-1.", "correct": false, "why": "DAX is a regional, in-memory read-through/write-through cache. There is no multi-Region DAX global cluster, and writes still go to the single base table." },
+      { "text": "Enable point-in-time recovery and schedule an hourly cross-Region export and import of the table into eu-west-1 for European players.", "correct": false, "why": "Exports and imports are batch jobs. The European copy would be up to an hour stale and could not take local writes that sync back, so this is not active-active." }
+    ],
+    "takeaway": "DynamoDB global tables are the managed answer for multi-Region active-active DynamoDB; the default mode resolves conflicts with last writer wins.",
+    "trap": "Hand-rolled Streams replication or a non-existent multi-Region DAX",
+    "services": ["DynamoDB", "Lambda"]
+  },
+  {
+    "id": "resilience-005",
+    "domain": "resilience",
+    "topic": "S3 Cross-Region Replication",
+    "difficulty": "hard",
+    "scenario": "A media company keeps 1.2 PB of video masters in a versioned S3 bucket in us-east-1. A new business-continuity policy requires a copy of every object, including all objects that already exist, in a bucket in us-west-2. For new uploads, the policy requires replication within 15 minutes backed by an AWS SLA, and the company wants replication-latency metrics in CloudWatch.",
+    "question": "Which combination of actions meets these requirements? (Select TWO.)",
+    "qualifier": null,
+    "select": 2,
+    "options": [
+      { "text": "Create a versioned destination bucket in us-west-2 and an S3 Replication rule with S3 Replication Time Control (RTC) enabled.", "correct": true, "why": "RTC is designed to replicate 99.99% of new objects within 15 minutes, comes with an SLA, and automatically enables replication metrics such as ReplicationLatency and OperationsPendingReplication. Versioning must be enabled on both buckets." },
+      { "text": "Run an S3 Batch Replication job to replicate the objects that existed before the replication rule was created.", "correct": true, "why": "Live replication rules only apply to objects uploaded after the rule exists. S3 Batch Replication is the supported way to backfill existing objects, and objects that previously failed to replicate, to the destination." },
+      { "text": "Enable the replication rule's \"replicate existing objects automatically\" flag so the live rule backfills the existing objects in the background within the RTC window.", "correct": false, "why": "Live replication rules have no such flag. Existing objects need a Batch Replication job, and the RTC 15-minute target applies only to new objects." },
+      { "text": "Enable S3 Transfer Acceleration on the source bucket so that replication traffic uses the CloudFront edge network and meets the 15-minute target.", "correct": false, "why": "Transfer Acceleration speeds up client uploads to and downloads from a bucket over long distances. It has no effect on S3 replication and provides no replication SLA." },
+      { "text": "Schedule an AWS DataSync task every 15 minutes between the two buckets and publish task metrics to CloudWatch.", "correct": false, "why": "DataSync can copy between buckets, but a scheduled task is not continuous replication and carries no 15-minute replication SLA. It also adds an extra service to operate when native replication already meets the need." }
+    ],
+    "takeaway": "Use S3 RTC when you need a 15-minute replication SLA and metrics, and Batch Replication to backfill objects that existed before the rule.",
+    "trap": "Assuming live replication copies existing objects",
+    "services": ["S3", "CloudWatch", "DataSync"]
+  },
+  {
+    "id": "resilience-006",
+    "domain": "resilience",
+    "topic": "Route 53 health checks",
+    "difficulty": "hard",
+    "scenario": "A company exposes an internal API to other VPCs through a Route 53 private hosted zone record `api.corp.internal`. The primary copy runs on EC2 instances behind an internal Network Load Balancer in one VPC, and a standby copy runs behind another internal NLB in a second VPC that is associated with the same private hosted zone. The company wants DNS to fail over automatically to the standby when the primary NLB has no healthy targets. The NLBs have no public IP addresses.",
+    "question": "How should the DevOps engineer configure the failover?",
+    "qualifier": null,
+    "select": 1,
+    "options": [
+      { "text": "Create a CloudWatch alarm on the primary NLB's `HealthyHostCount` metric, create a Route 53 health check that monitors that alarm's state, and attach it to the primary record of a failover routing policy.", "correct": true, "why": "Route 53 health checkers run on the public internet and cannot reach private IP addresses. A health check based on a CloudWatch alarm's state works for private resources and can drive failover records in a private hosted zone." },
+      { "text": "Create a Route 53 HTTP endpoint health check that targets the private IP address of the primary NLB, and attach it to the primary failover record.", "correct": false, "why": "Endpoint health checks come from Route 53 health checkers on the internet, which cannot route to private VPC addresses. The check would always fail and cause a permanent failover." },
+      { "text": "Configure an EventBridge rule that matches the NLB target health change event and sends it directly to the Route 53 failover record to switch to the secondary.", "correct": false, "why": "Route 53 records are not EventBridge targets, and failover routing is driven only by health checks. This design also invents an event-to-record integration that doesn't exist." },
+      { "text": "Use a weighted routing policy with weight 100 on the primary and 0 on the standby, and rely on the NLB's own cross-zone failover to shift traffic.", "correct": false, "why": "NLB cross-zone load balancing spreads traffic across AZs inside one load balancer. It cannot send traffic to a different NLB in another VPC, and nothing would change the weights automatically." }
+    ],
+    "takeaway": "Route 53 health checkers cannot reach private endpoints; for private resources, use health checks based on CloudWatch alarms.",
+    "trap": "Endpoint health checks against private IPs",
+    "services": ["Route 53", "CloudWatch", "ELB"]
+  },
+  {
+    "id": "resilience-007",
+    "domain": "resilience",
+    "topic": "Route 53 Application Recovery Controller",
+    "difficulty": "hard",
+    "scenario": "A payments company runs identical active-passive stacks in us-east-1 and us-west-2, with Route 53 failover records in front. After an industry incident, the CTO requires that operators can fail over manually with one action that keeps working even if a Region, including the Route 53 control plane, is impaired. The CTO also requires a guardrail that prevents both Regions from being switched off at the same time by mistake.",
+    "question": "Which solution meets these requirements?",
+    "qualifier": null,
+    "select": 1,
+    "options": [
+      { "text": "Create a Route 53 Application Recovery Controller cluster with a routing control per Region tied to the failover records through routing control health checks, add an assertion safety rule that at least one routing control is On, and flip states through the cluster's Regional endpoints.", "correct": true, "why": "ARC routing controls are changed through a highly available data plane: a cluster with five Regional endpoints. Changing them doesn't depend on the Route 53 control plane. Safety rules enforce invariants such as keeping at least one Region On." },
+      { "text": "Write a runbook that calls `ChangeResourceRecordSets` to swap the record values to us-west-2, and store an SCP that blocks deleting both records at once.", "correct": false, "why": "`ChangeResourceRecordSets` is a Route 53 control-plane API, and AWS recommends against depending on control-plane changes during recovery. SCPs control IAM authorization, not the routing state of both Regions." },
+      { "text": "Enable ARC readiness checks on both stacks so that Route 53 automatically fails over when the passive Region is reported ready.", "correct": false, "why": "Readiness checks only audit whether the resources and quotas in the replica stack match. They never shift traffic, and they don't give operators a manual failover switch." },
+      { "text": "Lower the TTL on the failover records to 1 second and have operators deliberately fail the primary's Route 53 health check by stopping the primary ALB.", "correct": false, "why": "Breaking production to trigger a health check is fragile, has no guardrail against taking both Regions down, and still requires changes in the impaired Region." }
+    ],
+    "takeaway": "ARC routing controls give a data-plane-backed manual failover switch with safety rules; readiness checks only audit and never move traffic.",
+    "trap": "Relying on Route 53 control-plane APIs during recovery",
+    "services": ["Route 53 ARC", "Route 53"]
+  },
+  {
+    "id": "resilience-008",
+    "domain": "resilience",
+    "topic": "Auto Scaling lifecycle hooks",
+    "difficulty": "medium",
+    "scenario": "A company runs a batch-processing fleet on EC2 instances in an Auto Scaling group. Each instance writes processing logs to local disk, and auditors require every log to be uploaded to Amazon S3 before an instance goes away, including instances removed during scale-in. The upload takes up to 4 minutes. The team already uses AWS Systems Manager on all instances.",
+    "question": "Which solution meets these requirements MOST reliably?",
+    "qualifier": "MOST reliably",
+    "select": 1,
+    "options": [
+      { "text": "Add an `autoscaling:EC2_INSTANCE_TERMINATING` lifecycle hook, use an EventBridge rule on the lifecycle action event to start a Systems Manager Run Command that uploads the logs, and have the script call `complete-lifecycle-action` when it finishes.", "correct": true, "why": "The terminating lifecycle hook holds the instance in the Terminating:Wait state until the heartbeat timeout (default 3600 seconds) expires or `complete-lifecycle-action` is called. That guarantees time for the upload before termination." },
+      { "text": "Add a shutdown script to the instance through user data that uploads the logs to S3 when the operating system receives the shutdown signal.", "correct": false, "why": "OS shutdown scripts get a short, uncontrolled window and aren't guaranteed to finish a 4-minute upload. Nothing makes Auto Scaling wait for them." },
+      { "text": "Increase the target group deregistration delay to 300 seconds so the instance stays alive long enough to upload its logs.", "correct": false, "why": "Deregistration delay only lets in-flight load balancer requests drain. It doesn't run the upload, and this batch fleet may not even sit behind a load balancer." },
+      { "text": "Enable instance scale-in protection on all instances and remove it with a Lambda function after a nightly log upload.", "correct": false, "why": "Scale-in protection blocks scale-in until removed and doesn't cover health-check replacements. A nightly upload also misses logs written between runs, which is an overly complex workaround for what lifecycle hooks do natively." }
+    ],
+    "takeaway": "Use a terminating lifecycle hook to run custom work before an Auto Scaling instance is terminated, then call complete-lifecycle-action.",
+    "trap": "Confusing deregistration delay with lifecycle hooks",
+    "services": ["EC2 Auto Scaling", "EventBridge", "Systems Manager"]
+  },
+  {
+    "id": "resilience-009",
+    "domain": "resilience",
+    "topic": "Auto Scaling warm pools",
+    "difficulty": "hard",
+    "scenario": "An e-commerce company's application servers take about 9 minutes to boot because they load a large product catalog into memory and warm a local cache. Traffic spikes come from flash promotions that marketing announces with no notice, so the spikes are unpredictable. During spikes, new instances join too late and customers see errors. The company wants faster scale-out but does not want to pay for idle running compute.",
+    "question": "Which solution meets these requirements in the MOST cost-effective way?",
+    "qualifier": "MOST cost-effective",
+    "select": 1,
+    "options": [
+      { "text": "Add a warm pool to the Auto Scaling group with the pool state set to Stopped, and use a lifecycle hook so the instances run the full bootstrap before they are stopped in the pool.", "correct": true, "why": "Instances in a Stopped warm pool have already done their slow initialization, and you pay only for their EBS volumes while they wait. On scale-out they start much faster than a cold launch." },
+      { "text": "Enable predictive scaling on the Auto Scaling group so that capacity is launched ahead of the spikes.", "correct": false, "why": "Predictive scaling forecasts from recurring daily or weekly patterns in historical load. Unannounced flash promotions don't follow such patterns, so it can't launch capacity ahead of them." },
+      { "text": "Raise the group's minimum capacity to the peak size observed during the last promotion.", "correct": false, "why": "This works, but it keeps peak-sized running compute all the time, which is exactly the idle cost the company wants to avoid." },
+      { "text": "Lower the target tracking policy's target value and shorten the default instance warmup to 60 seconds so new instances are counted sooner.", "correct": false, "why": "Instance warmup only controls when a new instance's metrics count toward scaling decisions. It doesn't shorten the 9-minute boot, so instances still serve traffic too late." }
+    ],
+    "takeaway": "Warm pools pre-initialize instances; use the Stopped state to cut scale-out latency while paying only for storage.",
+    "trap": "Predictive scaling for unpredictable spikes",
+    "services": ["EC2 Auto Scaling"]
+  },
+  {
+    "id": "resilience-010",
+    "domain": "resilience",
+    "topic": "Auto Scaling and ELB health",
+    "difficulty": "hard",
+    "scenario": "A web application runs on EC2 instances in an Auto Scaling group registered with an ALB target group. The team sees two problems. When the application process hangs, the ALB marks the target unhealthy, but the instance stays in service for hours and is never replaced. During scale-in, users with long-running report downloads (up to 2 minutes) get their connections cut. A previous engineer set the target group's deregistration delay to 5 seconds.",
+    "question": "Which combination of changes resolves both problems? (Select TWO.)",
+    "qualifier": null,
+    "select": 2,
+    "options": [
+      { "text": "Turn on Elastic Load Balancing health checks for the Auto Scaling group (health check type ELB), keeping an appropriate health check grace period.", "correct": true, "why": "With only EC2 status checks, Auto Scaling sees a hung application as healthy because the instance is still running. Turning on ELB health checks makes Auto Scaling replace instances that the target group reports as unhealthy." },
+      { "text": "Increase the target group's deregistration delay to about 150 seconds.", "correct": true, "why": "Deregistration delay (connection draining) lets in-flight requests finish before a deregistering target is cut off. Setting it longer than the longest download stops connections from being dropped during scale-in." },
+      { "text": "Enable cross-zone load balancing on the ALB.", "correct": false, "why": "Cross-zone load balancing is always on for ALBs and only controls how traffic spreads across AZs. It doesn't affect health replacement or connection draining." },
+      { "text": "Enable slow start mode on the target group with a 120-second duration.", "correct": false, "why": "Slow start ramps up traffic to newly registered targets. It doesn't protect requests on targets being removed or trigger replacement of unhealthy ones." },
+      { "text": "Change the Auto Scaling group termination policy to OldestInstance.", "correct": false, "why": "Termination policies only choose which instance is removed during scale-in. They don't drain connections or detect hung applications." }
+    ],
+    "takeaway": "Auto Scaling uses EC2 status checks unless you also turn on ELB health checks; deregistration delay is what drains in-flight requests.",
+    "trap": "EC2-only health checks miss application failures",
+    "services": ["EC2 Auto Scaling", "ELB"]
+  },
+  {
+    "id": "resilience-011",
+    "domain": "resilience",
+    "topic": "Auto Scaling instance refresh",
+    "difficulty": "hard",
+    "scenario": "A company manages a 40-instance Auto Scaling group directly through the Auto Scaling API; it is not deployed with CloudFormation. Every month it publishes a new launch template version with a patched AMI. The rollout must keep at least 90% of capacity in service, and if a CloudWatch alarm on 5XX errors goes into ALARM during the rollout, the group must automatically go back to the previous launch template version.",
+    "question": "Which solution meets these requirements with the LEAST operational overhead?",
+    "qualifier": "LEAST operational overhead",
+    "select": 1,
+    "options": [
+      { "text": "Start an instance refresh with `MinHealthyPercentage` set to 90, auto rollback enabled, and an alarm specification that references the 5XX alarm.", "correct": true, "why": "Instance refresh replaces instances in batches that respect the minimum healthy percentage. With AutoRollback and an AlarmSpecification, it automatically rolls back to the previous configuration if the alarm goes into ALARM during the refresh." },
+      { "text": "Import the group into a CloudFormation stack and use an `AutoScalingRollingUpdate` update policy with `MinInstancesInService` set to 36.", "correct": false, "why": "A rolling update policy only applies to groups that a CloudFormation stack manages. Importing an API-managed group into a stack and wiring up stack rollback triggers just to get this behavior adds overhead that instance refresh avoids." },
+      { "text": "Write a Step Functions workflow that terminates 4 instances at a time, waits for replacements to pass health checks, and checks the alarm before each batch.", "correct": false, "why": "This re-creates instance refresh by hand, including the rollback logic. It is much more code to own than the built-in feature." },
+      { "text": "Set the new launch template version as default and let normal scale-in and scale-out events replace instances gradually over the month.", "correct": false, "why": "Old instances may never be replaced in a predictable way, nothing enforces the 90% floor, and there is no automatic rollback on the alarm." }
+    ],
+    "takeaway": "Instance refresh supports a minimum healthy percentage, checkpoints, and alarm-based auto rollback, which makes it the native way to roll out new AMIs.",
+    "trap": "Reaching for CloudFormation or custom orchestration when instance refresh does it natively",
+    "services": ["EC2 Auto Scaling", "CloudWatch"]
+  },
+  {
+    "id": "resilience-012",
+    "domain": "resilience",
+    "topic": "Global Accelerator",
+    "difficulty": "hard",
+    "scenario": "A B2B company serves a write-heavy REST API (mostly POST and PUT requests) from ALBs in us-east-1 and eu-west-1. Enterprise customers' firewalls allow outbound traffic only to a fixed set of IP addresses. The company needs automatic failover to the healthy Region within about a minute, without depending on clients honoring DNS TTLs, and it wants to route users to the nearest healthy Region.",
+    "question": "Which solution meets these requirements?",
+    "qualifier": null,
+    "select": 1,
+    "options": [
+      { "text": "Create an AWS Global Accelerator standard accelerator with an endpoint group in each Region that contains that Region's ALB, and give customers the accelerator's two static anycast IP addresses.", "correct": true, "why": "Global Accelerator provides static anycast IPs and sends clients to the closest healthy endpoint group. Health-check-driven failover happens inside the AWS network without DNS changes, so client DNS caching doesn't matter." },
+      { "text": "Put an Amazon CloudFront distribution in front of the API with an origin group that has the us-east-1 ALB as primary and the eu-west-1 ALB as secondary.", "correct": false, "why": "CloudFront origin failover only happens for GET, HEAD, and OPTIONS requests, so failed POST and PUT calls would not be retried against the secondary. It also doesn't route to the nearest Region; the primary origin always comes first." },
+      { "text": "Create Route 53 latency-based records with health checks for both ALBs and give customers the ALB IP addresses to allow-list.", "correct": false, "why": "ALB IP addresses change over time and can't be allow-listed reliably. Failover also depends on DNS, so clients that cache records past the TTL keep hitting the failed Region." },
+      { "text": "Put a Network Load Balancer with Elastic IP addresses in front of each ALB and use a Route 53 failover policy between the two NLBs.", "correct": false, "why": "This produces static IPs per Region, but failover is still DNS-based and subject to client caching. It also gives active-passive failover rather than nearest-Region routing, with more components to run." }
+    ],
+    "takeaway": "For static IPs plus fast multi-Region failover that doesn't depend on DNS, use Global Accelerator; CloudFront origin groups only fail over GET, HEAD, and OPTIONS.",
+    "trap": "CloudFront origin failover for non-idempotent methods",
+    "services": ["Global Accelerator", "CloudFront", "Route 53", "ELB"]
+  },
+  {
+    "id": "resilience-013",
+    "domain": "resilience",
+    "topic": "AWS Backup",
+    "difficulty": "hard",
+    "scenario": "After a ransomware incident at a peer company, a healthcare organization that uses AWS Organizations wants to protect the backups of its production RDS databases and EBS volumes. Backups must survive even if attackers fully compromise the production account, including its root user. Recovery points must be impossible to delete before their 35-day retention ends, for anyone.",
+    "question": "Which combination of actions meets these requirements? (Select TWO.)",
+    "qualifier": null,
+    "select": 2,
+    "options": [
+      { "text": "Enable cross-account backup in the Organizations management account and add a copy action to the backup plan that copies recovery points to a vault in a dedicated, isolated backup account.", "correct": true, "why": "AWS Backup cross-account copy, which requires accounts in the same organization, puts copies outside the production account's blast radius. A compromised production root user can't delete recovery points in another account." },
+      { "text": "Apply AWS Backup Vault Lock in compliance mode to the destination vault, with a minimum retention of 35 days.", "correct": true, "why": "Once the compliance-mode grace period ends, the lock is immutable. No one, including the root user or AWS, can delete recovery points early or remove the lock." },
+      { "text": "Apply AWS Backup Vault Lock in governance mode to the production vault.", "correct": false, "why": "Governance mode can be changed or removed by users with sufficient IAM permissions, so a compromised root or admin in the production account could bypass it." },
+      { "text": "Enable MFA Delete on the backup vault so deleting recovery points requires an MFA code.", "correct": false, "why": "MFA Delete is an S3 bucket versioning feature. AWS Backup vaults have no MFA Delete setting." },
+      { "text": "Use Amazon Data Lifecycle Manager to copy EBS snapshots to a second Region in the production account.", "correct": false, "why": "The copies stay in the same compromised account, where the attacker can delete them. DLM also doesn't cover RDS and offers no immutability." }
+    ],
+    "takeaway": "For ransomware-resistant backups, combine an isolated cross-account vault copy with Vault Lock in compliance mode.",
+    "trap": "Governance mode is not immutable",
+    "services": ["AWS Backup", "Organizations", "RDS", "EBS"]
+  },
+  {
+    "id": "resilience-014",
+    "domain": "resilience",
+    "topic": "Elastic Disaster Recovery",
+    "difficulty": "medium",
+    "scenario": "A manufacturing company runs 60 critical Windows and Linux servers on VMware in its own data center. It wants to use AWS as its disaster recovery site with an RPO of seconds and an RTO of minutes. It also wants to minimize AWS spending while no disaster is happening, and it does not want to rewrite the applications.",
+    "question": "Which solution meets these requirements in the MOST cost-effective way?",
+    "qualifier": "MOST cost-effective",
+    "select": 1,
+    "options": [
+      { "text": "Use AWS Elastic Disaster Recovery (AWS DRS) to continuously replicate the servers into a low-cost staging area subnet, and launch recovery instances only during a drill or disaster.", "correct": true, "why": "AWS DRS does continuous block-level replication, which gives an RPO of seconds, onto lightweight replication servers and inexpensive staging volumes. Full-size recovery instances launch in minutes only when needed." },
+      { "text": "Use AWS Backup for VMware to take hourly backups of the VMs and restore them to EC2 during a disaster.", "correct": false, "why": "Periodic backups give an RPO of at least the backup interval, an hour here, and restoring 60 VMs takes much longer than minutes." },
+      { "text": "Use AWS Application Migration Service (MGN) to replicate the servers and keep the launched test instances running in AWS as a standby.", "correct": false, "why": "MGN is built for one-time lift-and-shift migrations, not ongoing DR with drills and failback. Keeping full-size instances running also defeats the cost goal." },
+      { "text": "Build a warm standby in AWS by running scaled-down EC2 copies of every server and syncing data nightly with AWS DataSync.", "correct": false, "why": "Nightly syncs give an RPO of hours, and always-on EC2 copies cost far more than DRS's staging area." }
+    ],
+    "takeaway": "AWS Elastic Disaster Recovery gives an RPO of seconds and an RTO of minutes for on-premises or cloud servers while keeping a cheap staging area until failover.",
+    "trap": "Confusing MGN (migration) with DRS (disaster recovery)",
+    "services": ["Elastic Disaster Recovery", "AWS Backup", "Application Migration Service"]
+  },
+  {
+    "id": "resilience-015",
+    "domain": "resilience",
+    "topic": "SQS and Lambda decoupling",
+    "difficulty": "hard",
+    "scenario": "An order pipeline uses an SQS standard queue with a Lambda function as consumer. The function's timeout is 120 seconds, and the queue's visibility timeout is 30 seconds. The team sees orders processed two or three times, and a few malformed messages are retried forever. The function writes to an RDS database that can handle no more than 20 concurrent connections from this consumer.",
+    "question": "Which combination of changes resolves these issues while protecting the database? (Select THREE.)",
+    "qualifier": null,
+    "select": 3,
+    "options": [
+      { "text": "Set the queue's visibility timeout to at least 6 times the function timeout (for example, 720 seconds).", "correct": true, "why": "Messages become visible again and are processed a second time when visibility expires before processing ends. AWS recommends a visibility timeout of at least 6 times the function timeout for Lambda event source mappings, to allow for retries and throttling." },
+      { "text": "Configure a redrive policy that sends messages to a dead-letter queue after a `maxReceiveCount` of 5.", "correct": true, "why": "A DLQ with a sensible maxReceiveCount moves poison messages out of the main queue after repeated failures instead of retrying them forever." },
+      { "text": "Set maximum concurrency on the SQS event source mapping to 20.", "correct": true, "why": "Maximum concurrency on the event source mapping caps how many concurrent invocations the SQS poller drives, without throttling. That keeps database connections within the limit." },
+      { "text": "Set reserved concurrency on the function to 20 instead of using any event source mapping setting.", "correct": false, "why": "With SQS, reserved concurrency alone lets the pollers scale beyond the reserved amount and get throttled. Throttled messages return to the queue and use up receive attempts, so valid messages can land in the DLQ early." },
+      { "text": "Enable long polling by setting `ReceiveMessageWaitTimeSeconds` to 20 seconds.", "correct": false, "why": "Lambda's SQS pollers already use long polling, and the setting only reduces empty receives. It does nothing about visibility expiring mid-processing or poison messages." },
+      { "text": "Replace the queue with an SNS topic subscribed by the Lambda function so each order is delivered exactly once.", "correct": false, "why": "SNS standard topics do not guarantee exactly-once delivery and do not buffer for a rate-limited consumer. This removes the decoupling the queue provides." }
+    ],
+    "takeaway": "For SQS-to-Lambda: set visibility timeout to at least 6 times the function timeout, use a DLQ via maxReceiveCount, and cap concurrency with event source mapping maximum concurrency rather than reserved concurrency.",
+    "trap": "Using reserved concurrency to throttle an SQS consumer",
+    "services": ["SQS", "Lambda", "RDS"]
+  }
+]

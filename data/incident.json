@@ -1,0 +1,570 @@
+[
+  {
+    "id": "incident-001",
+    "domain": "incident",
+    "topic": "AWS Health",
+    "difficulty": "hard",
+    "scenario": "A logistics company runs hundreds of EBS-backed EC2 instances across 30 accounts in AWS Organizations. The operations team regularly misses AWS Health notifications about scheduled instance retirements, which causes unplanned outages when AWS stops the instances. The team wants every affected instance to be stopped and started automatically (moving it to healthy hardware) as soon as the retirement event is published, in every current and future account.",
+    "question": "Which solution meets these requirements with the LEAST operational overhead?",
+    "qualifier": "LEAST operational overhead",
+    "select": 1,
+    "options": [
+      {
+        "text": "Use CloudFormation StackSets with service-managed permissions and automatic deployment to create, in every account, an EventBridge rule matching `source` `aws.health` and `eventTypeCode` `AWS_EC2_PERSISTENT_INSTANCE_RETIREMENT_SCHEDULED`. Target the `AWS-RestartEC2Instance` Systems Manager Automation runbook, using an input transformer to pass the instance ID from the event's `resources` array.",
+        "correct": true,
+        "why": "AWS Health events are delivered to EventBridge in the affected account, and EventBridge can start an SSM Automation runbook directly. StackSets automatic deployment adds the rule to new accounts as they join the organization. A stop/start moves an EBS-backed instance to new hardware."
+      },
+      {
+        "text": "Write a Lambda function, scheduled every 15 minutes in the management account, that calls the AWS Health `DescribeEventsForOrganization` API, then assumes a role in each member account to stop and start the affected instances.",
+        "correct": false,
+        "why": "This works, but you have to build and maintain polling code and cross-account roles, and the AWS Health API needs a Business, Enterprise On-Ramp, or Enterprise support plan. The event-driven EventBridge approach has far less overhead."
+      },
+      {
+        "text": "Create an AWS Config rule in every account that evaluates EC2 instances for scheduled events and uses automatic remediation with the `AWS-RestartEC2Instance` runbook.",
+        "correct": false,
+        "why": "No managed AWS Config rule evaluates AWS Health retirement events. Config records resource configuration changes, not Health notifications, so you would need a custom rule for a problem EventBridge already solves."
+      },
+      {
+        "text": "Enable AWS Health organizational view and subscribe an SNS topic to the Health dashboard so the on-call engineer gets an email and runs the restart runbook through Systems Manager Run Command.",
+        "correct": false,
+        "why": "There is no SNS subscription on the Health dashboard itself, and an engineer acting on an email is manual remediation. Run Command also runs commands inside the OS; it cannot stop and start the instance."
+      }
+    ],
+    "takeaway": "AWS Health events reach EventBridge (source aws.health) in the affected account, so you can route them straight to an SSM Automation runbook; use StackSets to deploy the rule to every account.",
+    "trap": "Polling the Health API instead of reacting to events",
+    "services": [
+      "AWS Health",
+      "EventBridge",
+      "Systems Manager",
+      "CloudFormation"
+    ]
+  },
+  {
+    "id": "incident-002",
+    "domain": "incident",
+    "topic": "AWS Health",
+    "difficulty": "hard",
+    "scenario": "A developer at a media company accidentally pushed an IAM user's access key to a public GitHub repository. AWS detected the exposure and sent a notification, but the security team only saw it the next morning. The CISO wants future exposures handled automatically within minutes: the exposed key must be deleted, recent API activity by that key must be summarized, and the security team must be notified.",
+    "question": "Which solution meets these requirements?",
+    "qualifier": null,
+    "select": 1,
+    "options": [
+      {
+        "text": "Create an EventBridge rule that matches AWS Health events with `eventTypeCode` `AWS_RISK_CREDENTIALS_EXPOSED`. Target a Step Functions state machine that deletes the access key with `iam:DeleteAccessKey`, looks up the key's recent activity in CloudTrail with `LookupEvents`, and publishes a summary to an SNS topic.",
+        "correct": true,
+        "why": "AWS publishes exposed-credential notifications as AWS Health events of type `AWS_RISK_CREDENTIALS_EXPOSED`, which EventBridge can match. A state machine can then delete the key, query CloudTrail, and notify the team without anyone stepping in."
+      },
+      {
+        "text": "Enable Amazon GuardDuty in the account and create an EventBridge rule that matches the `UnauthorizedAccess:IAMUser/InstanceCredentialExfiltration.OutsideAWS` finding type. Invoke a Lambda function that deletes the access key, queries CloudTrail for the key's recent API calls, and publishes a summary to the security team's SNS topic.",
+        "correct": false,
+        "why": "That finding covers temporary EC2 instance-role credentials being used from outside AWS. It is not raised when long-term IAM user keys show up in a public repository, so the exposure would be missed."
+      },
+      {
+        "text": "Enable Amazon Detective and configure it to send the exposed-credential finding to an SNS topic that triggers a Lambda function to delete the key.",
+        "correct": false,
+        "why": "Detective is an investigation tool that builds behavior graphs from existing data. It does not detect leaked keys and does not publish findings to SNS."
+      },
+      {
+        "text": "Deploy the `access-keys-rotated` AWS Config managed rule with automatic remediation that deactivates any noncompliant access key.",
+        "correct": false,
+        "why": "`access-keys-rotated` only checks key age against `maxAccessKeyAge`. A freshly created key that has been exposed is still compliant, so nothing would be remediated."
+      }
+    ],
+    "takeaway": "Leaked IAM keys show up as the AWS Health event AWS_RISK_CREDENTIALS_EXPOSED. Match it with EventBridge and remediate with Step Functions or Lambda.",
+    "trap": "Assuming GuardDuty or Detective detects keys leaked to public repos",
+    "services": [
+      "AWS Health",
+      "EventBridge",
+      "Step Functions",
+      "IAM",
+      "CloudTrail"
+    ]
+  },
+  {
+    "id": "incident-003",
+    "domain": "incident",
+    "topic": "Lambda failure handling",
+    "difficulty": "hard",
+    "scenario": "An e-commerce company processes order events with a Lambda function that S3 and SNS invoke asynchronously. A DLQ is configured today, but the operations team complains that it holds only the original event payload, so they cannot see which retries were exhausted or the full function response. They also want successful invocations recorded on an EventBridge event bus for downstream analytics, and failed events routed to a different EventBridge bus that has its own rules.",
+    "question": "Which configuration meets these requirements with the LEAST operational overhead?",
+    "qualifier": "LEAST operational overhead",
+    "select": 1,
+    "options": [
+      {
+        "text": "Set an on-success destination and an on-failure destination, each pointing to the appropriate EventBridge event bus, in the function's asynchronous invocation configuration. Tune `MaximumRetryAttempts` and `MaximumEventAgeInSeconds` as needed.",
+        "correct": true,
+        "why": "Lambda destinations for asynchronous invocations support EventBridge, SNS, SQS, Lambda, and (for failures) S3. The record they send includes the request payload, the response or error payload, and a `requestContext` showing whether the event failed because retries ran out or because it got too old."
+      },
+      {
+        "text": "Change the DLQ to an SNS topic and subscribe both EventBridge buses to the topic, using SNS filter policies to separate successes from failures.",
+        "correct": false,
+        "why": "A DLQ only receives failed events, never successful ones, and EventBridge event buses cannot be SNS subscribers. Even with a different target, the DLQ message still lacks the response payload."
+      },
+      {
+        "text": "Wrap the function code in try/catch blocks that call `PutEvents` to the right event bus on success or failure.",
+        "correct": false,
+        "why": "This adds custom code to maintain, and it cannot capture failures that happen outside the handler, such as timeouts or out-of-memory crashes. It also does not know whether Lambda's built-in retries have run out."
+      },
+      {
+        "text": "Configure an event source mapping with `DestinationConfig` and `BisectBatchOnFunctionError` so failed events are split and sent to the failure bus.",
+        "correct": false,
+        "why": "Event source mappings exist for poll-based sources such as SQS, Kinesis, and DynamoDB Streams. S3 and SNS invoke Lambda asynchronously, so there is no event source mapping to configure, and bisecting only applies to stream batches."
+      }
+    ],
+    "takeaway": "For asynchronous Lambda, destinations beat DLQs: they cover both success and failure, support more target types, and include response and context details.",
+    "trap": "DLQ vs destinations",
+    "services": [
+      "Lambda",
+      "EventBridge"
+    ]
+  },
+  {
+    "id": "incident-004",
+    "domain": "incident",
+    "topic": "Lambda event source mapping",
+    "difficulty": "hard",
+    "scenario": "A fintech company consumes a Kinesis data stream with a Lambda function through an event source mapping that uses the default settings. Last night one malformed record made the function throw repeatedly. The shard stopped making progress for hours while the batch was retried until it expired, and the iterator age alarm fired. The team wants a bad record to be isolated quickly, healthy records to keep flowing, and details of any record that cannot be processed kept for later analysis.",
+    "question": "Which combination of event source mapping settings should the team configure? (Select THREE.)",
+    "qualifier": null,
+    "select": 3,
+    "options": [
+      {
+        "text": "Set `BisectBatchOnFunctionError` to true.",
+        "correct": true,
+        "why": "When the function returns an error, Lambda splits the batch in half and retries each half separately. This quickly narrows the failure down to the poison record while the healthy records get processed."
+      },
+      {
+        "text": "Set `MaximumRetryAttempts` (and optionally `MaximumRecordAgeInSeconds`) to a small finite value.",
+        "correct": true,
+        "why": "By default, stream event source mappings retry until the record expires (-1, meaning unlimited). A finite limit lets Lambda give up on the bad record and move the shard forward."
+      },
+      {
+        "text": "Configure an on-failure destination (an SQS queue or SNS topic) on the event source mapping.",
+        "correct": true,
+        "why": "When retries run out, Lambda sends a record to the destination describing the failed batch: shard ID and starting and ending sequence numbers. You can use it to fetch the records again and analyze them."
+      },
+      {
+        "text": "Configure a dead-letter queue in the Lambda function's `DeadLetterConfig`.",
+        "correct": false,
+        "why": "A function-level DLQ applies only to asynchronous invocations. Stream event source mappings invoke the function synchronously and ignore `DeadLetterConfig`."
+      },
+      {
+        "text": "Increase `ParallelizationFactor` to 10 so other batches in the shard can be processed while the bad batch is retried.",
+        "correct": false,
+        "why": "Parallelization processes batches concurrently but still keeps records with the same partition key in order. The poison record's partition keeps getting blocked, and nothing ever removes the bad record."
+      },
+      {
+        "text": "Increase the Kinesis stream's data retention period to 7 days.",
+        "correct": false,
+        "why": "Longer retention means the bad batch is retried even longer before it expires, which makes the stall worse."
+      }
+    ],
+    "takeaway": "For Kinesis or DynamoDB Streams consumers, combine bisect-on-error, finite retries or record age, and an on-failure destination. A function-level DLQ does nothing for stream sources.",
+    "trap": "Function DLQ doesn't apply to event source mappings",
+    "services": [
+      "Lambda",
+      "Kinesis Data Streams",
+      "SQS"
+    ]
+  },
+  {
+    "id": "incident-005",
+    "domain": "incident",
+    "topic": "Step Functions",
+    "difficulty": "medium",
+    "scenario": "A travel company's Step Functions Standard workflow (written in JSONPath) calls a Lambda function that charges customers through a third-party payment API. The API sometimes throttles requests, and the function surfaces this as a custom `PaymentThrottled` error. The team wants throttled calls retried with increasing delays. If the call still fails after the retries, the workflow must go to a `RefundAndNotify` state that needs both the original order input and the error details.",
+    "question": "Which state machine configuration meets these requirements?",
+    "qualifier": null,
+    "select": 1,
+    "options": [
+      {
+        "text": "Add a `Retry` field to the task with `ErrorEquals: [\"PaymentThrottled\"]`, `IntervalSeconds`, `BackoffRate`, and `MaxAttempts`. Add a `Catch` field with `ErrorEquals: [\"States.ALL\"]`, `Next: \"RefundAndNotify\"`, and `ResultPath: \"$.error\"`.",
+        "correct": true,
+        "why": "Step Functions runs `Retry` first, waiting longer each time based on `BackoffRate`, and falls through to `Catch` only after the retries run out. Setting `ResultPath` to `$.error` adds the error object to the original input instead of replacing it."
+      },
+      {
+        "text": "Add a `Retry` field for `PaymentThrottled` with `IntervalSeconds: 2`, `BackoffRate: 2.0`, and `MaxAttempts: 5`, and a `Catch` field with `ErrorEquals: [\"States.ALL\"]` and `Next: \"RefundAndNotify\"`. Leave `ResultPath` at its default so the error output is passed to the next state.",
+        "correct": false,
+        "why": "In a `Catch`, `ResultPath` defaults to `$`, which replaces the state's input with the error output. `RefundAndNotify` would get only the error and lose the original order data."
+      },
+      {
+        "text": "Configure the Lambda function's asynchronous invocation `MaximumRetryAttempts` to 2 and an on-failure destination that starts the `RefundAndNotify` logic.",
+        "correct": false,
+        "why": "The Step Functions Lambda integration invokes the function synchronously (RequestResponse), so asynchronous retry and destination settings never apply. The workflow would also lose control of the failure path."
+      },
+      {
+        "text": "Add a `Catch` field for `PaymentThrottled` that loops back to the same task through a `Wait` state, and a second `Catch` for `States.ALL` that goes to `RefundAndNotify`.",
+        "correct": false,
+        "why": "A hand-built loop with no counter can retry forever and needs extra states to track attempts. `Retry` with `MaxAttempts` and `BackoffRate` does this natively."
+      }
+    ],
+    "takeaway": "Retry runs before Catch. Always set ResultPath in Catch (for example $.error), otherwise the error replaces the original input.",
+    "trap": "Catch default ResultPath replaces input",
+    "services": [
+      "Step Functions",
+      "Lambda"
+    ]
+  },
+  {
+    "id": "incident-006",
+    "domain": "incident",
+    "topic": "EventBridge",
+    "difficulty": "medium",
+    "scenario": "A SaaS company publishes `OrderPlaced` events from its order service to a custom EventBridge event bus. A rule routes them to a billing Lambda function. A bug deployed on Tuesday made the billing function silently ignore some events for 6 hours before it was fixed. The company needs to reprocess exactly the events from that window through the fixed function, and wants to be able to do the same for future incidents.",
+    "question": "Which solution meets these requirements with the LEAST operational overhead?",
+    "qualifier": "LEAST operational overhead",
+    "select": 1,
+    "options": [
+      {
+        "text": "Create an EventBridge archive on the custom event bus (with an event pattern for `OrderPlaced` and a retention period). After a future incident, start a replay from the archive for the affected time window, targeting the billing rule.",
+        "correct": true,
+        "why": "Archives keep events matching a pattern on a bus, and `StartReplay` sends them back to the same bus for a chosen time range, optionally only to selected rules. Note that an archive only covers events received after it is created."
+      },
+      {
+        "text": "Configure an SQS dead-letter queue on the billing rule's target and redrive the messages after the fix.",
+        "correct": false,
+        "why": "A target DLQ only catches events EventBridge failed to deliver. Here delivery succeeded and the function ignored the events, so they never reach the DLQ."
+      },
+      {
+        "text": "Use CloudTrail Lake to query the `PutEvents` data events recorded on the custom event bus during the 6-hour window, export the results to S3, and run a script that reads the export and calls `PutEvents` again for each recorded event so the fixed billing function receives them.",
+        "correct": false,
+        "why": "CloudTrail records the `PutEvents` API call, not the full event payloads. A custom republishing script is far more work than a replay."
+      },
+      {
+        "text": "Insert an SQS queue between the event bus and the function with a 14-day retention period and replay messages from the queue as needed.",
+        "correct": false,
+        "why": "Messages are deleted from the queue after they are processed successfully, so events that were consumed and ignored are gone. SQS has no time-window replay."
+      }
+    ],
+    "takeaway": "EventBridge archive and replay lets you reprocess past events by time window after fixing a bug, but the archive must exist before the events arrive.",
+    "trap": "Target DLQ only catches delivery failures",
+    "services": [
+      "EventBridge",
+      "Lambda"
+    ]
+  },
+  {
+    "id": "incident-007",
+    "domain": "incident",
+    "topic": "EventBridge cross-account",
+    "difficulty": "hard",
+    "scenario": "A healthcare company with more than 80 accounts in AWS Organizations wants every GuardDuty finding and every EC2 state-change event from all accounts sent to a custom event bus named `central-ops` in a dedicated operations account. The central team's rules then route the events to its tooling. New accounts are added every month, and the central bus policy should not have to be edited each time.",
+    "question": "Which combination of steps meets these requirements? (Select TWO.)",
+    "qualifier": null,
+    "select": 2,
+    "options": [
+      {
+        "text": "Add a resource-based policy to the `central-ops` event bus that allows `events:PutEvents` from any principal, with a condition that `aws:PrincipalOrgID` equals the organization ID.",
+        "correct": true,
+        "why": "One organization-scoped statement on the event bus policy lets every current and future member account send events, so you never have to add account IDs one by one."
+      },
+      {
+        "text": "Deploy (for example with service-managed StackSets) an EventBridge rule in each member account that matches the required events and targets the ARN of the `central-ops` bus, with an IAM role that allows `events:PutEvents` on that bus.",
+        "correct": true,
+        "why": "Events must be forwarded by a rule in the source account whose target is the other account's event bus. StackSets automatic deployment also creates the rule in new accounts."
+      },
+      {
+        "text": "Share the `central-ops` event bus with the organization through AWS Resource Access Manager so member accounts' default buses deliver to it automatically.",
+        "correct": false,
+        "why": "EventBridge event buses cannot be shared through AWS RAM. Cross-account delivery uses event bus resource policies plus rules in the source accounts."
+      },
+      {
+        "text": "Create rules on the `central-ops` bus that use each member account's default event bus as the event source.",
+        "correct": false,
+        "why": "EventBridge rules only match events already on their own bus. A central account cannot pull events from other accounts' buses; the source accounts have to push them."
+      },
+      {
+        "text": "Add each member account ID to the `central-ops` bus policy with a Lambda function triggered by the Organizations `CreateAccount` CloudTrail event.",
+        "correct": false,
+        "why": "This works, but it means maintaining custom automation, and `aws:PrincipalOrgID` already covers new accounts without any changes."
+      }
+    ],
+    "takeaway": "Cross-account EventBridge is push-based: rules in the source accounts target the central bus, and an aws:PrincipalOrgID bus policy admits the whole organization.",
+    "trap": "Event buses can't be shared via RAM / pulled cross-account",
+    "services": [
+      "EventBridge",
+      "Organizations",
+      "CloudFormation"
+    ]
+  },
+  {
+    "id": "incident-008",
+    "domain": "incident",
+    "topic": "Auto Scaling troubleshooting",
+    "difficulty": "hard",
+    "scenario": "A company's security team required all EBS volumes to be encrypted. The platform team copied the golden AMI with encryption using a customer managed KMS key in the same account and updated the Auto Scaling group's launch template to use the new AMI. Since then, every scale-out activity fails with `Client.InternalError: Client error on launch`, and the instances terminate right away. Launching the same AMI manually as an administrator works.",
+    "question": "What should a DevOps engineer do to resolve the issue?",
+    "qualifier": null,
+    "select": 1,
+    "options": [
+      {
+        "text": "Update the KMS key policy to allow the `AWSServiceRoleForAutoScaling` service-linked role to use the key (`kms:Decrypt`, `kms:GenerateDataKey*`, `kms:ReEncrypt*`, `kms:DescribeKey`, and `kms:CreateGrant`).",
+        "correct": true,
+        "why": "Amazon EC2 Auto Scaling launches instances with its service-linked role, which needs permission to use the customer managed key that encrypts the AMI's snapshots. Without it, the volumes can't be created and the launch fails with `Client.InternalError`."
+      },
+      {
+        "text": "Add a statement to the instance profile role used by the launch template that allows `kms:Decrypt`, `kms:GenerateDataKey*`, and `kms:CreateGrant` on the customer managed key, so the instances can decrypt their own EBS volumes when they launch.",
+        "correct": false,
+        "why": "The instance profile role is used by software running on the instance after boot. EBS volumes are decrypted at launch on behalf of the Auto Scaling service-linked role, not the instance role."
+      },
+      {
+        "text": "Change the Auto Scaling group health check type from ELB to EC2 so instances are not terminated during startup.",
+        "correct": false,
+        "why": "The instances never finish launching, so health checks are not involved. Changing the health check type does not fix a KMS permission error at launch."
+      },
+      {
+        "text": "Request an increase to the EC2 On-Demand vCPU service quota for the Region.",
+        "correct": false,
+        "why": "Hitting a quota produces errors like `VcpuLimitExceeded` or `InsufficientInstanceCapacity`, not `Client.InternalError`. Manual launches also work, so capacity is not the problem."
+      }
+    ],
+    "takeaway": "Client.InternalError on launch with encrypted AMIs usually means the Auto Scaling service-linked role can't use the KMS key. Fix the key policy, or use a grant if the key is in another account.",
+    "trap": "Instance profile vs Auto Scaling service-linked role",
+    "services": [
+      "EC2 Auto Scaling",
+      "KMS",
+      "EBS"
+    ]
+  },
+  {
+    "id": "incident-009",
+    "domain": "incident",
+    "topic": "CodeDeploy troubleshooting",
+    "difficulty": "hard",
+    "scenario": "A company deploys a Java application to an EC2 deployment group with CodeDeploy. Revision 41 deployed successfully, but its `ApplicationStop` hook script had a bug that was found later. Every deployment since then fails in the `ApplicationStop` lifecycle event on all instances, even though the team has fixed the `ApplicationStop` script in revisions 42 and 43. The team needs to get revision 43 deployed.",
+    "question": "What is the MOST likely cause and fix?",
+    "qualifier": "MOST likely",
+    "select": 1,
+    "options": [
+      {
+        "text": "`ApplicationStop` runs the script from the last successfully deployed revision (41), so the fix in the new revisions is never used. Redeploy revision 43 with the `ignoreApplicationStopFailures` option (`--ignore-application-stop-failures` in the CLI).",
+        "correct": true,
+        "why": "CodeDeploy runs the `ApplicationStop` hook from the previous successful revision's bundle on the instance, because that is the application being stopped. Ignoring `ApplicationStop` failures lets the deployment continue, and after it succeeds, the fixed script becomes the one used next time."
+      },
+      {
+        "text": "The `appspec.yml` file in revision 43 is invalid. Validate it locally and redeploy.",
+        "correct": false,
+        "why": "An invalid AppSpec file fails earlier, when the revision is downloaded and the file is parsed. It would not fail consistently at `ApplicationStop` with an old script."
+      },
+      {
+        "text": "The CodeDeploy agent is out of date. Use Systems Manager to update the agent on all instances and redeploy.",
+        "correct": false,
+        "why": "An outdated agent does not explain why the failure started after revision 41's buggy script. The new revision's fixed script still won't be the one run at `ApplicationStop`."
+      },
+      {
+        "text": "Change the deployment configuration from `CodeDeployDefault.OneAtATime` to `CodeDeployDefault.AllAtOnce` so the minimum healthy hosts check does not stop the deployment.",
+        "correct": false,
+        "why": "The deployment configuration only controls how many instances are deployed at the same time. Every instance would still fail at `ApplicationStop`."
+      }
+    ],
+    "takeaway": "ApplicationStop uses the previous successful revision's script. If that script is broken, deploy with ignoreApplicationStopFailures.",
+    "trap": "ApplicationStop runs the old revision's script",
+    "services": [
+      "CodeDeploy",
+      "EC2"
+    ]
+  },
+  {
+    "id": "incident-010",
+    "domain": "incident",
+    "topic": "CloudFormation troubleshooting",
+    "difficulty": "medium",
+    "scenario": "A stack update failed, and CloudFormation's automatic rollback also failed. The stack is now in `UPDATE_ROLLBACK_FAILED`. The events show that rollback could not restore an `AWS::ECS::Service` because someone deleted its target group outside CloudFormation during the incident. The stack contains production databases that must not be replaced, and the team needs the stack updatable again as quickly as possible.",
+    "question": "What should the DevOps engineer do?",
+    "qualifier": null,
+    "select": 1,
+    "options": [
+      {
+        "text": "Run `ContinueUpdateRollback` with the ECS service's logical ID in `ResourcesToSkip`. After the stack reaches `UPDATE_ROLLBACK_COMPLETE`, fix the template so the service and target group match reality.",
+        "correct": true,
+        "why": "`ContinueUpdateRollback` is the supported way out of `UPDATE_ROLLBACK_FAILED`. Skipping the resource that can't be restored marks it as rolled back, and the stack becomes updatable without touching the databases."
+      },
+      {
+        "text": "Delete the stack and recreate it from the last known good template.",
+        "correct": false,
+        "why": "Deleting the stack would delete (or orphan, with DeletionPolicy) the production databases. That is unnecessary and risky when the rollback can be continued."
+      },
+      {
+        "text": "Run `UpdateStack` with the original template to force the stack back to its previous state.",
+        "correct": false,
+        "why": "A stack in `UPDATE_ROLLBACK_FAILED` cannot be updated. You have to finish the rollback first with `ContinueUpdateRollback`."
+      },
+      {
+        "text": "Run drift detection on the stack to identify the deleted target group. Then use a resource import operation to bring a recreated target group back under management, and run `UpdateStack` with the original template to complete the rollback.",
+        "correct": false,
+        "why": "Drift detection only reports differences, and resource import and `UpdateStack` are both blocked while the stack is in `UPDATE_ROLLBACK_FAILED`. The rollback has to be finished with `ContinueUpdateRollback` first."
+      }
+    ],
+    "takeaway": "To recover from UPDATE_ROLLBACK_FAILED, run ContinueUpdateRollback and add ResourcesToSkip for resources that can't be restored.",
+    "trap": "Deleting/updating a stack stuck in UPDATE_ROLLBACK_FAILED",
+    "services": [
+      "CloudFormation",
+      "ECS"
+    ]
+  },
+  {
+    "id": "incident-011",
+    "domain": "incident",
+    "topic": "AWS Config remediation",
+    "difficulty": "medium",
+    "scenario": "An insurance company's audit found security groups that allow SSH (port 22) from 0.0.0.0/0. The company wants any such rule detected continuously and removed automatically within minutes, with a compliance history kept for auditors. The solution should use managed components wherever possible.",
+    "question": "Which combination of steps meets these requirements with the LEAST operational overhead? (Select TWO.)",
+    "qualifier": "LEAST operational overhead",
+    "select": 2,
+    "options": [
+      {
+        "text": "Deploy the `restricted-ssh` AWS Config managed rule and configure automatic remediation with the `AWS-DisableIncomingSSHOnPort22` Systems Manager Automation document, passing the security group ID as the resource parameter.",
+        "correct": true,
+        "why": "The managed rule flags security groups that allow 0.0.0.0/0 on port 22, and Config automatic remediation runs the AWS-owned Automation runbook that removes those ingress rules. Config keeps the compliance timeline auditors need."
+      },
+      {
+        "text": "Create an IAM role that Systems Manager Automation can assume, with `ec2:RevokeSecurityGroupIngress` and `ec2:DescribeSecurityGroups` permissions, and pass it as the `AutomationAssumeRole` parameter of the remediation.",
+        "correct": true,
+        "why": "Remediation runbooks run with the role passed in `AutomationAssumeRole`. Without a role that trusts `ssm.amazonaws.com` and has permission to revoke ingress, the remediation fails."
+      },
+      {
+        "text": "Write a custom Config rule backed by Lambda that evaluates security groups and calls `RevokeSecurityGroupIngress` from inside the evaluation function.",
+        "correct": false,
+        "why": "This could work, but it means maintaining custom code for something a managed rule and AWS-owned runbook already do. Mixing evaluation and remediation also makes compliance history unreliable."
+      },
+      {
+        "text": "Enable AWS Trusted Advisor's security group check and configure weekly email notifications to the security team.",
+        "correct": false,
+        "why": "Trusted Advisor flags unrestricted ports but does not remediate. Weekly email does not meet the within-minutes requirement."
+      },
+      {
+        "text": "Enable Amazon Inspector network reachability findings and use Inspector to remove the offending rules.",
+        "correct": false,
+        "why": "Inspector reports network exposure but has no remediation actions. It never changes security groups."
+      }
+    ],
+    "takeaway": "Config managed rule plus automatic remediation with an AWS-owned SSM runbook plus an AutomationAssumeRole is the low-overhead pattern for detect-and-fix.",
+    "trap": "Custom Lambda when managed rule + runbook exists",
+    "services": [
+      "AWS Config",
+      "Systems Manager",
+      "IAM"
+    ]
+  },
+  {
+    "id": "incident-012",
+    "domain": "incident",
+    "topic": "Incident Manager",
+    "difficulty": "hard",
+    "scenario": "A payments company wants a formal incident response process for its checkout service. When the service's composite CloudWatch alarm goes into ALARM, an incident should be opened automatically. The on-call engineer should be paged, and if they don't acknowledge within 10 minutes, the secondary engineer and then the engineering manager should be paged. A diagnostic runbook should start automatically, responders should collaborate in a Slack channel, and a post-incident analysis should be produced afterward.",
+    "question": "Which solution meets these requirements with the LEAST operational overhead?",
+    "qualifier": "LEAST operational overhead",
+    "select": 1,
+    "options": [
+      {
+        "text": "Use AWS Systems Manager Incident Manager: define contacts and an escalation plan with stages, then create a response plan that engages the escalation plan, starts a Systems Manager Automation runbook, and uses a chat channel configured through Amazon Q Developer in chat applications. Set the response plan as the alarm's action.",
+        "correct": true,
+        "why": "Incident Manager provides escalation plans with acknowledgement timeouts, response plans that link runbooks and chat channels, CloudWatch alarm or EventBridge triggers, and built-in post-incident analysis templates."
+      },
+      {
+        "text": "Configure the alarm to publish to an SNS topic that sends SMS to the primary engineer. Add a Lambda function that records the page in DynamoDB, checks for an acknowledgement every 10 minutes, and pages the secondary engineer and then the manager. Start the runbook from the same function and post updates to Slack through a webhook.",
+        "correct": false,
+        "why": "This rebuilds escalation and acknowledgement tracking by hand, and still doesn't provide runbooks, a timeline, or post-incident analysis. That is much more overhead."
+      },
+      {
+        "text": "Configure the alarm to create an OpsCenter OpsItem with high severity and assign the OpsItem to the on-call engineer.",
+        "correct": false,
+        "why": "OpsItems track operational work, but OpsCenter has no on-call paging, escalation plans, acknowledgement timeouts, or chat channel engagement."
+      },
+      {
+        "text": "Enable AWS Health organizational view and configure AWS User Notifications to email the on-call rotation when the alarm fires.",
+        "correct": false,
+        "why": "AWS Health reports AWS service events, not your application alarms, and email notifications provide no escalation or runbook automation."
+      }
+    ],
+    "takeaway": "Incident Manager = contacts + escalation plans + response plans (runbook, chat channel, engagements) + post-incident analysis. OpsCenter only tracks work items.",
+    "trap": "OpsCenter OpsItems vs Incident Manager incidents",
+    "services": [
+      "Systems Manager",
+      "CloudWatch"
+    ]
+  },
+  {
+    "id": "incident-013",
+    "domain": "incident",
+    "topic": "Fault Injection Service",
+    "difficulty": "medium",
+    "scenario": "A streaming company wants to confirm that its ECS on Fargate service recovers when a third of its tasks are stopped, running the test in production during low traffic. Leadership requires the experiment to stop automatically and immediately if the customer-facing 5XX error rate on the Application Load Balancer goes above 2% for one minute.",
+    "question": "Which approach meets these requirements with the LEAST operational overhead?",
+    "qualifier": "LEAST operational overhead",
+    "select": 1,
+    "options": [
+      {
+        "text": "Create an AWS FIS experiment template with the `aws:ecs:stop-task` action targeting 33% of the service's tasks, and add a stop condition that references a CloudWatch alarm on the ALB 5XX error rate metric.",
+        "correct": true,
+        "why": "FIS stop conditions are CloudWatch alarms. If an alarm goes into ALARM while the experiment runs, FIS stops the experiment right away, so no custom monitoring code is needed."
+      },
+      {
+        "text": "Create the AWS FIS experiment template with the `aws:ecs:stop-task` action. Then create an EventBridge rule that matches the 5XX alarm's state change to ALARM and invokes a Lambda function that calls the FIS `StopExperiment` API with the ID of the running experiment.",
+        "correct": false,
+        "why": "This works, but it adds a rule and a function to do what native stop conditions already do."
+      },
+      {
+        "text": "Write a Step Functions workflow that calls `ecs:StopTask` on randomly selected tasks and checks the alarm state between steps.",
+        "correct": false,
+        "why": "This builds a custom chaos tool. Between checks, impact can keep growing, and it lacks FIS's targeting, logging, and safety controls."
+      },
+      {
+        "text": "Use an AWS FIS experiment with the `aws:fis:wait` action set to one minute after stopping tasks, then review the dashboard and stop manually if needed.",
+        "correct": false,
+        "why": "Manual review does not meet the requirement for an automatic, immediate stop. A wait action just pauses the experiment and does not guard anything."
+      }
+    ],
+    "takeaway": "FIS stop conditions are CloudWatch alarms. Use them to stop an experiment automatically as soon as customer impact crosses a threshold.",
+    "trap": "Custom stop logic instead of native stop conditions",
+    "services": [
+      "Fault Injection Service",
+      "CloudWatch",
+      "ECS"
+    ]
+  },
+  {
+    "id": "incident-014",
+    "domain": "incident",
+    "topic": "EventBridge API destinations",
+    "difficulty": "hard",
+    "scenario": "A retail company uses a third-party incident tool that accepts alerts through an HTTPS webhook. The webhook requires an API key in a custom header and a specific JSON body with `summary`, `severity`, and `source` fields. The company wants every CloudWatch alarm state change to ALARM sent to this webhook, with rate limiting so the tool isn't flooded during large outages, and without writing or maintaining code.",
+    "question": "Which combination of steps meets these requirements? (Select TWO.)",
+    "qualifier": null,
+    "select": 2,
+    "options": [
+      {
+        "text": "Create an EventBridge connection that uses API key authorization with the custom header name, and an API destination for the webhook endpoint with an invocation rate limit.",
+        "correct": true,
+        "why": "Connections store the credentials (in an AWS managed Secrets Manager secret) and add the header to each request. API destinations call HTTPS endpoints with a configurable invocations-per-second limit."
+      },
+      {
+        "text": "Create an EventBridge rule matching `CloudWatch Alarm State Change` events where `detail.state.value` is `ALARM`, with the API destination as the target and an input transformer that maps event fields into the required `summary`, `severity`, and `source` JSON template.",
+        "correct": true,
+        "why": "An input transformer extracts values from the event with `InputPathsMap` and builds a new body with `InputTemplate`. It reshapes the event payload without any Lambda function."
+      },
+      {
+        "text": "Subscribe the webhook URL to an SNS topic using the HTTPS protocol and configure the alarms to publish to the topic.",
+        "correct": false,
+        "why": "SNS HTTPS deliveries use SNS's own JSON envelope and require the endpoint to confirm the subscription. You can't set a custom API key header or build the vendor's body format."
+      },
+      {
+        "text": "Configure the input transformer to call the CloudWatch `DescribeAlarms` API and add the alarm's threshold and metric history to the payload.",
+        "correct": false,
+        "why": "Input transformers only reshape data already in the event. They can't call APIs or add outside data; that would need EventBridge Pipes enrichment or a Lambda function."
+      },
+      {
+        "text": "Create a Lambda function that formats the alarm and posts it to the webhook, with reserved concurrency set to 1 for rate limiting.",
+        "correct": false,
+        "why": "This works, but it goes against the no-code requirement and means maintaining HTTP client code, retries, and secret handling yourself."
+      }
+    ],
+    "takeaway": "EventBridge API destination plus connection plus input transformer delivers to third-party webhooks with auth and rate limits, no code needed. Input transformers reshape the event; they can't fetch data.",
+    "trap": "Input transformers can't enrich with external data",
+    "services": [
+      "EventBridge",
+      "CloudWatch",
+      "Secrets Manager"
+    ]
+  }
+]

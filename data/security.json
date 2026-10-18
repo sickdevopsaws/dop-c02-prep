@@ -1,0 +1,701 @@
+[
+  {
+    "id": "security-001",
+    "domain": "security",
+    "topic": "IAM permission boundaries",
+    "difficulty": "hard",
+    "scenario": "A software company wants its application developers to create IAM roles for their own Lambda functions without opening a ticket with the cloud team. The security team requires that no role a developer creates can ever have more permissions than a predefined `DevWorkloadBoundary` managed policy allows, even if the developer attaches `AdministratorAccess` to it. Developers must not be able to get around the control.",
+    "question": "Which solution meets these requirements while following the principle of LEAST privilege?",
+    "qualifier": "LEAST privilege",
+    "select": 1,
+    "options": [
+      {
+        "text": "Grant developers `iam:CreateRole`, `iam:AttachRolePolicy`, and `iam:PutRolePolicy` only when the condition `iam:PermissionsBoundary` equals the `DevWorkloadBoundary` ARN. Explicitly deny `iam:DeleteRolePermissionsBoundary`, changes to the boundary policy itself, and `iam:PutRolePermissionsBoundary` with any other policy.",
+        "correct": true,
+        "why": "A permissions boundary caps the effective permissions of a role at what both the identity policy and the boundary allow. The `iam:PermissionsBoundary` condition forces every new role to carry the boundary, and the explicit denies stop developers from removing or loosening it."
+      },
+      {
+        "text": "Attach an SCP to the developers' account that denies every action not listed in `DevWorkloadBoundary`.",
+        "correct": false,
+        "why": "An SCP limits every principal in the account, including the cloud team and pipelines, not just roles developers create. It also does nothing to stop developers from creating roles."
+      },
+      {
+        "text": "Require developers to pass `DevWorkloadBoundary` as a session policy when they assume their developer role.",
+        "correct": false,
+        "why": "A session policy only limits the developer's own session. It has no effect on the permissions of roles the developer creates, which Lambda later assumes on its own."
+      },
+      {
+        "text": "Use IAM Access Analyzer custom policy checks in a nightly job to find roles that grant more than `DevWorkloadBoundary` and delete them.",
+        "correct": false,
+        "why": "This only detects problems after the fact, so over-privileged roles exist until the job runs. The requirement is that roles can never exceed the boundary."
+      }
+    ],
+    "takeaway": "To safely delegate role creation, use a permissions boundary, require it with the iam:PermissionsBoundary condition, and deny removing or editing it.",
+    "trap": "Session policies/SCPs instead of permissions boundaries",
+    "services": [
+      "IAM"
+    ]
+  },
+  {
+    "id": "security-002",
+    "domain": "security",
+    "topic": "Organizations SCPs",
+    "difficulty": "hard",
+    "scenario": "A company's organization root has the default `FullAWSAccess` SCP. The `Workloads` OU had `FullAWSAccess` replaced with an allow-list SCP that allows only `ec2:*`, `s3:*`, `cloudwatch:*`, and `logs:*`. Account `111122223333` in that OU has both `FullAWSAccess` and a custom SCP that allows `lambda:*`. An administrator in the account who has the `AdministratorAccess` IAM policy gets an access denied error when creating a Lambda function.",
+    "question": "What is the cause, and how should the issue be resolved?",
+    "qualifier": null,
+    "select": 1,
+    "options": [
+      {
+        "text": "An action must be allowed by SCPs at every level from the root down to the account. `lambda:*` is not allowed by the `Workloads` OU SCP, so add `lambda:*` to that OU's allow-list SCP.",
+        "correct": true,
+        "why": "Effective SCP permissions are the intersection across the root, each OU in the path, and the account. An allow attached lower down cannot add back an action that a parent OU's allow-list leaves out."
+      },
+      {
+        "text": "SCPs never grant permissions, so add an IAM policy with `lambda:CreateFunction` to the administrator.",
+        "correct": false,
+        "why": "It's true that SCPs don't grant permissions, but `AdministratorAccess` already allows Lambda. What blocks the call is the OU's SCP filter, which no IAM policy can override."
+      },
+      {
+        "text": "SCP allows attached directly to an account override the SCPs inherited from its parent OU, so the account-level `lambda:*` allow is the one that applies. The new account SCP simply hasn't propagated yet; wait up to 24 hours and try again.",
+        "correct": false,
+        "why": "There is no override between levels; every level has to allow the action. SCP changes also take effect within minutes, not hours."
+      },
+      {
+        "text": "Move the Lambda permission into a new SCP attached to the organization root.",
+        "correct": false,
+        "why": "The root already allows everything through `FullAWSAccess`. The OU allow-list still filters out Lambda for every account beneath it."
+      }
+    ],
+    "takeaway": "SCP permissions are the intersection along the entire path from root to OU to account. An allow lower down cannot restore what a parent filters out.",
+    "trap": "SCP inheritance misconception",
+    "services": [
+      "Organizations",
+      "IAM"
+    ]
+  },
+  {
+    "id": "security-003",
+    "domain": "security",
+    "topic": "IAM Identity Center ABAC",
+    "difficulty": "hard",
+    "scenario": "A consulting firm uses IAM Identity Center with Okta as its external identity provider. 120 project teams share several AWS accounts, and each team's resources carry a `project` tag. Each consultant must manage EC2 instances and Secrets Manager secrets only for the project in their Okta profile. Consultants move between projects every few weeks, and the cloud team wants to avoid per-project changes in AWS.",
+    "question": "Which solution meets these requirements with the LEAST operational overhead?",
+    "qualifier": "LEAST operational overhead",
+    "select": 1,
+    "options": [
+      {
+        "text": "Enable attributes for access control in IAM Identity Center, mapping the Okta `project` attribute (passed in the SAML assertion or through SCIM) to a session tag. Create one permission set whose policy allows actions only when `aws:ResourceTag/project` equals `${aws:PrincipalTag/project}`.",
+        "correct": true,
+        "why": "This is ABAC: Identity Center passes the user's attribute as a principal tag on the session, so one permission set works for every project. Moving a consultant only requires changing the attribute in Okta."
+      },
+      {
+        "text": "Create one permission set per project with resource ARNs hard-coded, and assign consultants to the matching permission set when they change projects.",
+        "correct": false,
+        "why": "This is role-based access with 120 permission sets to maintain and reassignments every time someone moves. That is the overhead ABAC is meant to remove."
+      },
+      {
+        "text": "Create an IAM OIDC identity provider for Okta in each account and have consultants use `AssumeRoleWithWebIdentity` with a project-specific role.",
+        "correct": false,
+        "why": "This bypasses Identity Center, requires per-account providers and per-project roles, and uses web identity federation meant for apps rather than workforce console access."
+      },
+      {
+        "text": "Use a permission set with a permissions boundary that lists every project's resources, and use SCPs to deny access to other projects' resources.",
+        "correct": false,
+        "why": "Boundaries and SCPs can't tell which project a user belongs to, and listing resources means constant updates. Isolation per user needs principal tags."
+      }
+    ],
+    "takeaway": "ABAC with Identity Center: pass IdP attributes as session tags and compare aws:PrincipalTag to aws:ResourceTag in a single permission set.",
+    "trap": "Role-per-project explosion instead of ABAC",
+    "services": [
+      "IAM Identity Center",
+      "IAM"
+    ]
+  },
+  {
+    "id": "security-004",
+    "domain": "security",
+    "topic": "IAM Access Analyzer",
+    "difficulty": "hard",
+    "scenario": "After an audit, a bank must reduce standing privileges across 60 accounts in AWS Organizations. The security team needs a continuously updated, centralized view of IAM roles and users that haven't been used recently, and of permissions that roles have but never use. For roles that are still in use, the team wants a starting least-privilege policy based on what the role actually did over the past 90 days.",
+    "question": "Which combination of actions meets these requirements with the LEAST operational overhead? (Select TWO.)",
+    "qualifier": "LEAST operational overhead",
+    "select": 2,
+    "options": [
+      {
+        "text": "Create an IAM Access Analyzer unused access analyzer with the organization as the zone of trust, from the delegated administrator account, with a tracking period of 90 days.",
+        "correct": true,
+        "why": "Unused access analyzers continuously report unused roles, unused access keys and passwords, and unused service- and action-level permissions for every account in the organization, from one place."
+      },
+      {
+        "text": "Use IAM Access Analyzer policy generation for the active roles, pointing it at the organization CloudTrail trail for the 90-day window.",
+        "correct": true,
+        "why": "Policy generation reads the role's CloudTrail activity and produces a policy limited to the services and actions actually used, which gives a least-privilege starting point."
+      },
+      {
+        "text": "Download the IAM credential report from each account every week and combine the reports in Amazon Athena.",
+        "correct": false,
+        "why": "Credential reports only cover IAM users, not roles or unused permissions. Collecting them from 60 accounts every week is manual overhead."
+      },
+      {
+        "text": "Deploy the `iam-user-unused-credentials-check` AWS Config rule through an organization conformance pack.",
+        "correct": false,
+        "why": "That rule only checks IAM user passwords and keys. It ignores roles and can't find unused permissions inside policies."
+      },
+      {
+        "text": "Run IAM Access Analyzer `CheckNoNewAccess` custom policy checks in the CI/CD pipeline for every policy change.",
+        "correct": false,
+        "why": "Custom policy checks validate policy changes before deployment, which is useful as a guardrail. They don't find access that is already granted but unused."
+      }
+    ],
+    "takeaway": "Access Analyzer covers three jobs: external access findings, unused access findings (org-wide), and policy generation from CloudTrail for least privilege.",
+    "trap": "Credential report covers users only",
+    "services": [
+      "IAM Access Analyzer",
+      "IAM",
+      "CloudTrail",
+      "Organizations"
+    ]
+  },
+  {
+    "id": "security-005",
+    "domain": "security",
+    "topic": "Resource control policies",
+    "difficulty": "hard",
+    "scenario": "A pharmaceutical company has hundreds of S3 buckets across 50 member accounts in AWS Organizations, managed by many teams. The security team must guarantee that no principal outside the organization can access any of these buckets, even if a team writes a bucket policy that grants access to an external AWS account. AWS services acting on the company's behalf must keep working. The control must be central and preventive.",
+    "question": "Which solution meets these requirements?",
+    "qualifier": null,
+    "select": 1,
+    "options": [
+      {
+        "text": "Attach a resource control policy (RCP) to the organization root that denies `s3:*` when `aws:PrincipalOrgID` is not the company's organization ID, with a condition that excludes AWS service principals (`aws:PrincipalIsAWSService` false).",
+        "correct": true,
+        "why": "RCPs set the maximum permissions on resources in member accounts no matter who the caller is, so an external principal is blocked even if a bucket policy allows it. Exempting service principals keeps AWS service integrations working."
+      },
+      {
+        "text": "Attach a service control policy (SCP) to the organization root that denies all `s3:*` actions unless the `aws:PrincipalOrgID` condition key matches the company's organization ID, and exempt AWS service principals with an `aws:PrincipalIsAWSService` condition.",
+        "correct": false,
+        "why": "SCPs only apply to principals inside the organization's member accounts. A principal in an external account isn't affected by your SCPs, so a permissive bucket policy would still let it in."
+      },
+      {
+        "text": "Enable S3 Block Public Access at the organization level for all accounts.",
+        "correct": false,
+        "why": "Block Public Access blocks public (anonymous or any-principal) grants. A bucket policy that names one specific external account ID isn't public, so that access would still be allowed."
+      },
+      {
+        "text": "Enable an IAM Access Analyzer external access analyzer for the organization and send findings to Security Hub.",
+        "correct": false,
+        "why": "Access Analyzer detects external access after a policy exists. The requirement is a preventive control that stops the access from working in the first place."
+      }
+    ],
+    "takeaway": "SCPs limit your own principals; RCPs limit access to your resources, including by outside principals. A data perimeter uses both.",
+    "trap": "Using an SCP to block external principals",
+    "services": [
+      "Organizations",
+      "S3",
+      "IAM"
+    ]
+  },
+  {
+    "id": "security-006",
+    "domain": "security",
+    "topic": "Cross-account roles",
+    "difficulty": "medium",
+    "scenario": "A retailer is onboarding a third-party cost-optimization SaaS vendor that needs read-only access to the retailer's AWS account. The vendor runs its platform in its own AWS account and serves thousands of customers. The retailer's security team is concerned that another vendor customer could trick the vendor into accessing the retailer's account.",
+    "question": "Which solution is the MOST secure?",
+    "qualifier": "MOST secure",
+    "select": 1,
+    "options": [
+      {
+        "text": "Create an IAM role with read-only permissions whose trust policy allows the vendor's AWS account as the principal, with a condition requiring `sts:ExternalId` to match a unique value the vendor generated for the retailer.",
+        "correct": true,
+        "why": "The external ID protects against the confused deputy problem: the vendor's system must supply this customer's unique ID when calling `AssumeRole`, so another customer can't get the vendor to assume the retailer's role."
+      },
+      {
+        "text": "Create an IAM user with read-only permissions and give the vendor its access key, rotated every 90 days.",
+        "correct": false,
+        "why": "Long-term access keys held by a third party are a leakage risk, and rotating them by hand is error-prone. Cross-account roles provide temporary credentials instead."
+      },
+      {
+        "text": "Create an IAM role with read-only permissions whose trust policy allows any principal, with a condition that `aws:PrincipalOrgID` must equal the vendor's AWS Organizations ID, so only identities from the vendor's organization can assume it.",
+        "correct": false,
+        "why": "This limits callers to the vendor's organization but doesn't stop the confused deputy problem, because the vendor's own platform makes the call on behalf of any of its customers."
+      },
+      {
+        "text": "Configure an IAM OIDC identity provider pointing to the vendor's login page and allow `AssumeRoleWithWebIdentity`.",
+        "correct": false,
+        "why": "OIDC web identity federation is for end users or workloads authenticating with an OIDC provider. It is not the right pattern for an AWS-hosted vendor accessing your account."
+      }
+    ],
+    "takeaway": "Third-party cross-account access means an IAM role, a trust policy naming the vendor account, and a unique sts:ExternalId to prevent the confused deputy problem.",
+    "trap": "Confused deputy / missing external ID",
+    "services": [
+      "IAM",
+      "STS"
+    ]
+  },
+  {
+    "id": "security-007",
+    "domain": "security",
+    "topic": "Resource-based policies",
+    "difficulty": "hard",
+    "scenario": "A DevOps engineer is configuring S3 event notifications so that object uploads to bucket `invoices-raw` send messages to an SQS queue in the same account. The queue is encrypted with SSE-KMS using a customer managed key. When the engineer saves the notification configuration, S3 returns `Unable to validate the following destination configurations`. The solution must follow least privilege.",
+    "question": "Which combination of changes is required? (Select TWO.)",
+    "qualifier": "least privilege",
+    "select": 2,
+    "options": [
+      {
+        "text": "Add a statement to the SQS queue policy that allows the `s3.amazonaws.com` service principal to call `sqs:SendMessage`, with conditions on `aws:SourceArn` (the bucket ARN) and `aws:SourceAccount`.",
+        "correct": true,
+        "why": "S3 delivers notifications as the S3 service principal, so the queue's resource-based policy must allow it. The source conditions stop other buckets or accounts from using that permission (confused deputy protection)."
+      },
+      {
+        "text": "Add a statement to the customer managed KMS key policy that allows the `s3.amazonaws.com` service principal to use `kms:GenerateDataKey` and `kms:Decrypt`.",
+        "correct": true,
+        "why": "To send to an SSE-KMS queue, the sender needs permission to generate a data key with the queue's KMS key. S3 has to be allowed in the key policy or the message can't be encrypted."
+      },
+      {
+        "text": "Create an IAM role that S3 can assume with `sqs:SendMessage` permission, and set the role ARN on the bucket notification configuration.",
+        "correct": false,
+        "why": "S3 event notifications don't use an IAM role; there's no role setting on the notification configuration. Permission comes only from the destination's resource policy."
+      },
+      {
+        "text": "Change the queue encryption to the AWS managed key `aws/sqs` to avoid editing key policies.",
+        "correct": false,
+        "why": "You can't change the key policy of an AWS managed key, and it doesn't allow S3, so notifications to a queue encrypted with `aws/sqs` fail. Use SSE-SQS or a customer managed key."
+      },
+      {
+        "text": "Add a statement to the `invoices-raw` bucket policy that allows the SQS service principal to call `s3:GetObject`.",
+        "correct": false,
+        "why": "This grants the wrong service the wrong permission. What's missing is S3's permission to write to the queue and use the key, not SQS reading the bucket."
+      }
+    ],
+    "takeaway": "Services that publish to SQS or SNS need the destination's resource policy (service principal plus aws:SourceArn and aws:SourceAccount), and a customer managed key policy when SSE-KMS is used.",
+    "trap": "IAM role where a resource policy is needed",
+    "services": [
+      "S3",
+      "SQS",
+      "KMS"
+    ]
+  },
+  {
+    "id": "security-008",
+    "domain": "security",
+    "topic": "KMS cross-account",
+    "difficulty": "hard",
+    "scenario": "Account A (data platform) stores reports in an S3 bucket encrypted with SSE-KMS using a customer managed key in account A. A Lambda function in account B (analytics) must read these objects. The bucket policy already grants the Lambda execution role in account B `s3:GetObject`, but every call returns `AccessDenied` from KMS.",
+    "question": "Which combination of changes should be made to grant access with LEAST privilege? (Select TWO.)",
+    "qualifier": "LEAST privilege",
+    "select": 2,
+    "options": [
+      {
+        "text": "In account A, add a statement to the KMS key policy that allows account B's Lambda execution role ARN to call `kms:Decrypt`.",
+        "correct": true,
+        "why": "Cross-account KMS use requires the key policy in the key's account to allow the external principal (or the external account). Without it, IAM policies in account B have no effect."
+      },
+      {
+        "text": "In account B, attach an IAM policy to the Lambda execution role that allows `kms:Decrypt` on the full key ARN from account A.",
+        "correct": true,
+        "why": "The external account must also grant its own principal permission in an identity policy. Cross-account permissions in IAM policies must reference the key ARN, not an alias."
+      },
+      {
+        "text": "In account B, attach an IAM policy that allows `kms:Decrypt` on `alias/reports-key`.",
+        "correct": false,
+        "why": "To control access to a key in another account in an IAM policy, use the key ARN. An alias ARN resource only controls access to the alias, not to the key."
+      },
+      {
+        "text": "Re-encrypt the objects with the AWS managed key `aws/s3` and share it with account B.",
+        "correct": false,
+        "why": "You can't edit AWS managed key policies, so they can't be used across accounts. That makes this approach impossible."
+      },
+      {
+        "text": "In account B, create a KMS grant on account A's key for the Lambda role.",
+        "correct": false,
+        "why": "Account B can only create a grant if account A's key policy already allows it to call `kms:CreateGrant`. Even then, a grant adds complexity without solving the missing key policy permission."
+      }
+    ],
+    "takeaway": "Cross-account KMS needs both: the key policy in the key owner account and an IAM policy in the caller account referencing the key ARN. AWS managed keys can't be shared.",
+    "trap": "Only one side of cross-account KMS / aws-managed key",
+    "services": [
+      "KMS",
+      "S3",
+      "Lambda",
+      "IAM"
+    ]
+  },
+  {
+    "id": "security-009",
+    "domain": "security",
+    "topic": "KMS multi-Region keys",
+    "difficulty": "medium",
+    "scenario": "A fintech company encrypts sensitive fields on the client side with the AWS Encryption SDK and a KMS key in us-east-1, then stores the ciphertext in a DynamoDB global table that replicates to eu-west-1. For disaster recovery, the application in eu-west-1 must be able to decrypt the data even if us-east-1 is completely unavailable, without re-encrypting the data.",
+    "question": "Which solution meets these requirements?",
+    "qualifier": null,
+    "select": 1,
+    "options": [
+      {
+        "text": "Use a KMS multi-Region primary key in us-east-1 and create a replica key in eu-west-1. Decrypt in eu-west-1 by calling KMS in that Region with the replica key.",
+        "correct": true,
+        "why": "Multi-Region keys share the same key material and key ID across Regions, so ciphertext produced in one Region can be decrypted locally by the replica without calling the original Region."
+      },
+      {
+        "text": "Keep the single-Region key and have the eu-west-1 application call the us-east-1 KMS endpoint to decrypt.",
+        "correct": false,
+        "why": "This keeps a hard dependency on us-east-1. If that Region is down, decryption fails, which breaks the DR requirement."
+      },
+      {
+        "text": "Create a new single-Region customer managed key in eu-west-1 and give it the same alias as the us-east-1 key. The Encryption SDK resolves the alias in whichever Region the application runs in, so the eu-west-1 application can decrypt locally.",
+        "correct": false,
+        "why": "Aliases are per Region, and a different key has different key material. Ciphertext from the us-east-1 key can't be decrypted by an unrelated key."
+      },
+      {
+        "text": "Enable automatic key rotation on the us-east-1 key, which also copies the key material to the other Regions where the table is replicated.",
+        "correct": false,
+        "why": "Automatic rotation only creates new key material for the same key in the same Region. It never copies keys to other Regions."
+      }
+    ],
+    "takeaway": "Multi-Region KMS keys let you decrypt in another Region without cross-Region calls. Aliases and single-Region keys don't carry over between Regions.",
+    "trap": "Assuming aliases/rotation make keys multi-Region",
+    "services": [
+      "KMS",
+      "DynamoDB"
+    ]
+  },
+  {
+    "id": "security-010",
+    "domain": "security",
+    "topic": "Secrets Manager rotation",
+    "difficulty": "hard",
+    "scenario": "A company runs a vendor-supplied application on ECS that connects to an Amazon RDS for PostgreSQL database with a username and password. The application can't generate IAM authentication tokens, but it can read credentials from a configured secret store at startup and when a connection fails. A new policy requires the application's database password to be rotated automatically every 30 days without application downtime.",
+    "question": "Which solution meets these requirements with the LEAST operational overhead?",
+    "qualifier": "LEAST operational overhead",
+    "select": 1,
+    "options": [
+      {
+        "text": "Store the credentials in AWS Secrets Manager and turn on rotation every 30 days using the AWS-provided PostgreSQL rotation function with the alternating-users strategy.",
+        "correct": true,
+        "why": "Secrets Manager rotation is native and uses AWS-provided Lambda rotation templates. The alternating-users strategy keeps one valid set of credentials at all times while the other is rotated, which avoids downtime."
+      },
+      {
+        "text": "Store the password as a Systems Manager Parameter Store `SecureString` parameter and enable its built-in rotation schedule.",
+        "correct": false,
+        "why": "Parameter Store has no built-in rotation. Policies on advanced parameters can only expire (delete) a parameter or send EventBridge notifications; they never change the database password."
+      },
+      {
+        "text": "Store the password in Parameter Store as a `SecureString`. Create an EventBridge Scheduler schedule that runs every 30 days and invokes a custom Lambda function, which generates a new password, changes it in PostgreSQL, and updates the parameter.",
+        "correct": false,
+        "why": "This works, but you'd have to write and maintain rotation logic, including the steps that avoid downtime, which Secrets Manager already provides."
+      },
+      {
+        "text": "Enable IAM database authentication on the RDS instance so passwords are no longer needed.",
+        "correct": false,
+        "why": "The vendor application can't generate IAM authentication tokens, so this doesn't meet the stated constraint."
+      }
+    ],
+    "takeaway": "Secrets Manager rotates natively, with an alternating-users option for zero downtime. Parameter Store SecureString has no native rotation.",
+    "trap": "Parameter Store 'rotation'",
+    "services": [
+      "Secrets Manager",
+      "Systems Manager",
+      "RDS"
+    ]
+  },
+  {
+    "id": "security-011",
+    "domain": "security",
+    "topic": "ECS task roles",
+    "difficulty": "hard",
+    "scenario": "A media company is moving a service to ECS on Fargate. The task definition pulls an image from a private ECR repository, sends logs with the `awslogs` driver, and injects a database password from Secrets Manager (encrypted with a customer managed KMS key) as an environment variable using the container definition's `secrets` field. At runtime, the application code uploads files to an S3 bucket. Tasks currently fail to start with `ResourceInitializationError: unable to pull secrets`.",
+    "question": "Which combination of IAM changes should the engineer make to follow LEAST privilege? (Select TWO.)",
+    "qualifier": "LEAST privilege",
+    "select": 2,
+    "options": [
+      {
+        "text": "Grant the task execution role `secretsmanager:GetSecretValue` on the specific secret ARN and `kms:Decrypt` on the customer managed key.",
+        "correct": true,
+        "why": "The ECS agent uses the task execution role to pull images, write logs, and fetch values referenced in `secrets` before the container starts. A secret encrypted with a customer managed key also needs `kms:Decrypt`."
+      },
+      {
+        "text": "Grant the task role `s3:PutObject` on the target bucket.",
+        "correct": true,
+        "why": "Application code in the container gets credentials from the task role (`taskRoleArn`). Calls the app makes, like S3 uploads, must be allowed there."
+      },
+      {
+        "text": "Grant the task role `secretsmanager:GetSecretValue` and `kms:Decrypt`, since the secret is used by the application.",
+        "correct": false,
+        "why": "Values in the `secrets` field are injected by the ECS agent before the container starts, using the execution role. The task role is only used by code running inside the container."
+      },
+      {
+        "text": "Add the permissions to the container instance IAM role so all tasks on the host inherit them.",
+        "correct": false,
+        "why": "Fargate has no container instances you manage. Even on EC2, using the instance role for every task goes against least privilege."
+      },
+      {
+        "text": "Store the password as a Docker Swarm secret and mount it into the task.",
+        "correct": false,
+        "why": "ECS doesn't support Docker Swarm secrets. ECS uses Secrets Manager or Parameter Store references through the `secrets` field."
+      }
+    ],
+    "takeaway": "The execution role is for the ECS agent (image pull, logs, injecting secrets); the task role is for your application's own AWS API calls.",
+    "trap": "Task execution role vs task role",
+    "services": [
+      "ECS",
+      "IAM",
+      "Secrets Manager",
+      "KMS"
+    ]
+  },
+  {
+    "id": "security-012",
+    "domain": "security",
+    "topic": "EKS Pod Identity",
+    "difficulty": "hard",
+    "scenario": "A platform team runs 25 Amazon EKS clusters and creates new clusters often, through blue/green cluster upgrades. Workloads in the `payments` namespace need access to a DynamoDB table using a shared IAM role. Today the team uses IAM roles for service accounts (IRSA) and has to update the role's trust policy with each new cluster's OIDC provider, and has occasionally hit trust policy size limits. Pods must not use the node's instance role.",
+    "question": "Which solution meets these requirements with the LEAST operational overhead?",
+    "qualifier": "LEAST operational overhead",
+    "select": 1,
+    "options": [
+      {
+        "text": "Install the Amazon EKS Pod Identity Agent add-on in each cluster, give the IAM role a trust policy for the `pods.eks.amazonaws.com` service principal (`sts:AssumeRole` and `sts:TagSession`), and create a pod identity association for the `payments` namespace and service account in each cluster.",
+        "correct": true,
+        "why": "With EKS Pod Identity, the role trusts one service principal no matter which cluster is calling, so new clusters only need an association. No OIDC provider or trust policy edits are required."
+      },
+      {
+        "text": "Keep using IRSA, but change the role's trust policy to use a wildcard in the `Federated` principal (`arn:aws:iam::<account>:oidc-provider/oidc.eks.<region>.amazonaws.com/id/*`) with a `StringLike` condition on the `sub` claim for `system:serviceaccount:payments:*`.",
+        "correct": false,
+        "why": "The `Federated` principal in a trust policy can't use wildcards for OIDC providers. Each cluster's provider has to be listed, which is the limitation they're hitting."
+      },
+      {
+        "text": "Attach the DynamoDB permissions to the managed node group's instance role.",
+        "correct": false,
+        "why": "This gives the permissions to every pod on those nodes and breaks the requirement that pods must not use the node role."
+      },
+      {
+        "text": "Create an IAM user with DynamoDB permissions and store its access keys in a Kubernetes Secret in the `payments` namespace.",
+        "correct": false,
+        "why": "Long-term keys in Kubernetes Secrets are a security risk and need manual rotation. Pod-level IAM roles provide temporary credentials."
+      }
+    ],
+    "takeaway": "EKS Pod Identity removes per-cluster OIDC trust management: one pods.eks.amazonaws.com trust policy plus a pod identity association per cluster.",
+    "trap": "IRSA per-cluster OIDC trust overhead",
+    "services": [
+      "EKS",
+      "IAM",
+      "DynamoDB"
+    ]
+  },
+  {
+    "id": "security-013",
+    "domain": "security",
+    "topic": "GuardDuty",
+    "difficulty": "hard",
+    "scenario": "A company with 70 accounts in AWS Organizations wants Amazon GuardDuty enabled in every account and Region it uses, including accounts created later. The security team, which works from a dedicated security tooling account, must get an email for every finding with high or critical severity from any account, using as few components as possible.",
+    "question": "Which combination of steps meets these requirements with the LEAST operational overhead? (Select TWO.)",
+    "qualifier": "LEAST operational overhead",
+    "select": 2,
+    "options": [
+      {
+        "text": "From the management account, designate the security tooling account as the GuardDuty delegated administrator in each Region, and set auto-enable for all organization members (`ALL`) in the GuardDuty organization configuration.",
+        "correct": true,
+        "why": "A delegated administrator with org auto-enable turns GuardDuty on for existing and new member accounts, and all member findings are collected in the administrator account."
+      },
+      {
+        "text": "In the delegated administrator account, in each Region, create an EventBridge rule matching `source` `aws.guardduty` with a numeric event pattern on `detail.severity` `>= 7`, targeting an SNS topic with the team's email subscribed.",
+        "correct": true,
+        "why": "GuardDuty sends findings to EventBridge, including member findings in the administrator account. A numeric match on severity covers High (7.0 to 8.9) and Critical (9.0 to 10.0)."
+      },
+      {
+        "text": "Subscribe the security team's email address directly to GuardDuty finding notifications in the GuardDuty console.",
+        "correct": false,
+        "why": "GuardDuty has no direct SNS or email subscription for findings. Notifications go through EventBridge, optionally with Security Hub in the path."
+      },
+      {
+        "text": "Enable Amazon Detective in the security tooling account and configure it to email high-severity findings.",
+        "correct": false,
+        "why": "Detective helps investigate findings with behavior graphs. It doesn't detect threats or send alerts, so it adds cost without meeting the requirement."
+      },
+      {
+        "text": "Use CloudFormation StackSets to enable a GuardDuty detector and an EventBridge rule in every member account and Region.",
+        "correct": false,
+        "why": "This works, but it duplicates rules and topics in every account and doesn't centralize findings. Org auto-enable and a central rule have much less overhead."
+      }
+    ],
+    "takeaway": "GuardDuty at org scale: a delegated admin with auto-enable ALL, then an EventBridge rule in the admin account (severity >= 7) to SNS. GuardDuty never publishes to SNS directly.",
+    "trap": "GuardDuty doesn't publish directly to SNS; Detective doesn't alert",
+    "services": [
+      "GuardDuty",
+      "EventBridge",
+      "SNS",
+      "Organizations"
+    ]
+  },
+  {
+    "id": "security-014",
+    "domain": "security",
+    "topic": "Security Hub",
+    "difficulty": "hard",
+    "scenario": "A company uses AWS Security Hub CSPM across 40 accounts in four Regions, with a delegated administrator account. Security analysts complain that they must switch Regions to see findings, and that one control (`EC2.8`, IMDSv2 required) floods them with findings from sandbox accounts, where the risk has been formally accepted. The team wants one place to see all findings and wants new sandbox findings for that control suppressed automatically, without custom code.",
+    "question": "Which solution meets these requirements with the LEAST operational overhead?",
+    "qualifier": "LEAST operational overhead",
+    "select": 1,
+    "options": [
+      {
+        "text": "In the delegated administrator account, designate a home (aggregation) Region that links the other three Regions. Create a Security Hub automation rule that matches control ID `EC2.8` and the sandbox account IDs and sets the workflow status to `SUPPRESSED`.",
+        "correct": true,
+        "why": "Cross-Region aggregation copies findings from linked Regions into the home Region. Automation rules update matching findings as they're created or updated (for example, setting workflow status to `SUPPRESSED`) without Lambda."
+      },
+      {
+        "text": "In each Region, create an EventBridge rule for `Security Hub Findings - Imported` events that invokes a Lambda function. The function calls `BatchUpdateFindings` to set the workflow status of `EC2.8` findings from sandbox accounts to `SUPPRESSED`, and analysts switch Regions to review the rest.",
+        "correct": false,
+        "why": "This was the pattern before automation rules existed. It works, but it adds custom code in every Region and doesn't solve viewing findings across Regions."
+      },
+      {
+        "text": "Create an AWS Config aggregator in the delegated administrator account and delete the `ec2-imdsv2-check` rule from sandbox accounts.",
+        "correct": false,
+        "why": "A Config aggregator shows compliance data, not Security Hub findings. Security Hub manages its own service-linked Config rules, so deleting one by hand gets reverted or breaks the control instead of suppressing findings cleanly."
+      },
+      {
+        "text": "Use AWS Audit Manager with a custom framework that excludes the sandbox accounts, and have analysts use Audit Manager instead of Security Hub.",
+        "correct": false,
+        "why": "Audit Manager collects audit evidence for compliance frameworks. It isn't a findings triage tool and has no cross-Region findings aggregation or suppression rules."
+      }
+    ],
+    "takeaway": "Security Hub cross-Region aggregation gives one pane of glass; automation rules suppress or adjust findings without Lambda.",
+    "trap": "Custom Lambda vs native automation rules",
+    "services": [
+      "Security Hub",
+      "AWS Config",
+      "Audit Manager"
+    ]
+  },
+  {
+    "id": "security-015",
+    "domain": "security",
+    "topic": "Amazon Inspector",
+    "difficulty": "medium",
+    "scenario": "A healthcare SaaS provider runs workloads on EC2 instances, container images stored in Amazon ECR, and Lambda functions across 20 accounts in AWS Organizations. Compliance requires continuous scanning for software vulnerabilities (CVEs) in all three, automatic rescanning when new CVEs are published, and a single organization-wide view of the results.",
+    "question": "Which solution meets these requirements with the LEAST operational overhead?",
+    "qualifier": "LEAST operational overhead",
+    "select": 1,
+    "options": [
+      {
+        "text": "Designate a delegated administrator for Amazon Inspector and enable EC2 scanning, ECR enhanced scanning, and Lambda scanning, with auto-enable for all member accounts.",
+        "correct": true,
+        "why": "Inspector continuously scans EC2 (through the SSM agent or agentless), ECR images (enhanced scanning), and Lambda functions for CVEs, rescans automatically when new CVEs are published, and combines results in the delegated administrator account."
+      },
+      {
+        "text": "Turn on Amazon ECR basic scanning with scan on push for every repository in all accounts, and use AWS Systems Manager Patch Manager compliance reports to track missing operating system patches on the EC2 instances, combining both in a shared dashboard.",
+        "correct": false,
+        "why": "Basic scanning only covers container images, not Lambda, and doesn't continuously rescan as new CVEs appear. Patch compliance reports missing patches, not a CVE inventory, so this leaves gaps and splits the results across tools."
+      },
+      {
+        "text": "Enable GuardDuty Malware Protection for EC2 and ECS and GuardDuty Lambda Protection organization-wide.",
+        "correct": false,
+        "why": "GuardDuty detects threats and malware (and Lambda Protection watches network activity). It doesn't do CVE scanning of software packages."
+      },
+      {
+        "text": "Enable Amazon Macie organization-wide with automated sensitive data discovery.",
+        "correct": false,
+        "why": "Macie finds sensitive data such as PII in S3. It doesn't scan compute for vulnerabilities."
+      }
+    ],
+    "takeaway": "Inspector = CVE scanning for EC2, ECR, and Lambda; GuardDuty = threats and malware; Macie = sensitive data in S3.",
+    "trap": "Inspector vs GuardDuty vs Macie",
+    "services": [
+      "Inspector",
+      "ECR",
+      "Lambda",
+      "EC2"
+    ]
+  },
+  {
+    "id": "security-016",
+    "domain": "security",
+    "topic": "CloudTrail protection",
+    "difficulty": "hard",
+    "scenario": "A regulated bank must keep API activity logs for all 90 accounts in its organization for 7 years. Auditors require that administrators in member accounts can't disable or change logging, that log files can't be deleted or overwritten by anyone (including administrators) during retention, and that the bank can prove a log file wasn't modified after delivery.",
+    "question": "Which combination of steps meets these requirements? (Select THREE.)",
+    "qualifier": null,
+    "select": 3,
+    "options": [
+      {
+        "text": "Create an organization trail from the management account (or the CloudTrail delegated administrator) that logs all Regions.",
+        "correct": true,
+        "why": "An organization trail is created automatically in every member account, and member accounts can see it but can't modify or delete it, so local administrators can't turn off logging."
+      },
+      {
+        "text": "Deliver the logs to an S3 bucket in a dedicated log archive account that has S3 Object Lock in compliance mode with a 7-year default retention period.",
+        "correct": true,
+        "why": "In compliance mode, no user, including the root user, can delete or overwrite object versions until retention ends. Using a separate account also isolates the logs from workload administrators."
+      },
+      {
+        "text": "Enable CloudTrail log file integrity validation.",
+        "correct": true,
+        "why": "CloudTrail delivers signed digest files (SHA-256 with RSA). Running `validate-logs` proves whether log files were modified, deleted, or forged after delivery."
+      },
+      {
+        "text": "Deploy the `cloudtrail-enabled` AWS Config rule in every account with an SNS notification.",
+        "correct": false,
+        "why": "This only detects that logging was disabled after it happens. It doesn't prevent tampering or deletion."
+      },
+      {
+        "text": "Use S3 Object Lock in governance mode so the security team can delete logs if needed.",
+        "correct": false,
+        "why": "Governance mode lets users with `s3:BypassGovernanceRetention` delete objects, which breaks the requirement that no one, including administrators, can delete logs."
+      },
+      {
+        "text": "Encrypt the log files with SSE-S3 and enable S3 Versioning on the bucket in the management account.",
+        "correct": false,
+        "why": "Versioning helps recovery, but privileged users can still delete versions, and SSE-S3 provides no integrity proof. Storing logs in the management account also goes against the log archive isolation best practice."
+      }
+    ],
+    "takeaway": "Tamper-proof audit trail = organization trail + Object Lock compliance mode in a log archive account + log file integrity validation.",
+    "trap": "Governance vs compliance mode; detect vs prevent",
+    "services": [
+      "CloudTrail",
+      "S3",
+      "Organizations"
+    ]
+  },
+  {
+    "id": "security-017",
+    "domain": "security",
+    "topic": "Firewall Manager",
+    "difficulty": "hard",
+    "scenario": "A retail group with 60 accounts in AWS Organizations must ensure that every internet-facing Application Load Balancer and CloudFront distribution, including ones created later by any team, is protected by an AWS WAF web ACL with the AWS Managed Rules core rule set and a company-specific rate-based rule. Resources that don't comply must be fixed automatically, and the security team wants one place to manage the rules.",
+    "question": "Which solution meets these requirements with the LEAST operational overhead?",
+    "qualifier": "LEAST operational overhead",
+    "select": 1,
+    "options": [
+      {
+        "text": "Designate a Firewall Manager administrator account, make sure AWS Config is enabled in member accounts, and create Firewall Manager AWS WAF policies (one Regional for ALBs, one global for CloudFront) that include the required rule groups, with automatic remediation turned on and scope set to the organization.",
+        "correct": true,
+        "why": "Firewall Manager deploys and associates WAF web ACLs across accounts, applies them to new resources in scope, and fixes non-compliant resources. It requires Organizations and AWS Config."
+      },
+      {
+        "text": "Subscribe all accounts to AWS Shield Advanced, which automatically applies the AWS Managed Rules core rule set to protected resources.",
+        "correct": false,
+        "why": "Shield Advanced adds DDoS protection, response team support, and cost protection. It doesn't deploy the core rule set or custom rate-based rules to every resource across the organization."
+      },
+      {
+        "text": "Deploy AWS Network Firewall in every VPC with stateful rule groups that use the AWS managed threat signature rule groups.",
+        "correct": false,
+        "why": "Network Firewall inspects VPC traffic, not ALB or CloudFront at layer 7 the way WAF does. It can't protect CloudFront distributions and isn't the required WAF web ACL."
+      },
+      {
+        "text": "Use CloudFormation StackSets with service-managed permissions to deploy a WAF web ACL containing the core rule set and the rate-based rule to every account and Region, and document that teams must associate the web ACL with each new ALB or distribution.",
+        "correct": false,
+        "why": "This creates the web ACLs but relies on teams to attach them, so new resources can be left unprotected and nothing remediates automatically."
+      }
+    ],
+    "takeaway": "Firewall Manager centrally enforces WAF, Shield Advanced, security group, and Network Firewall policies across an organization, including for new resources.",
+    "trap": "Shield Advanced/Network Firewall vs WAF via Firewall Manager",
+    "services": [
+      "Firewall Manager",
+      "WAF",
+      "Shield",
+      "Network Firewall",
+      "Organizations"
+    ]
+  }
+]
