@@ -139,12 +139,12 @@
         "why": "By default, stream event source mappings retry until the record expires (-1, meaning unlimited). A finite limit lets Lambda give up on the bad record and move the shard forward."
       },
       {
-        "text": "Configure an on-failure destination (an SQS queue or SNS topic) on the event source mapping.",
+        "text": "Configure an on-failure destination (an SQS queue, SNS topic, or S3 bucket) on the event source mapping.",
         "correct": true,
         "why": "When retries run out, Lambda sends a record to the destination describing the failed batch: shard ID and starting and ending sequence numbers. You can use it to fetch the records again and analyze them."
       },
       {
-        "text": "Configure a dead-letter queue in the Lambda function's `DeadLetterConfig`.",
+        "text": "Configure an SQS dead-letter queue in the Lambda function's `DeadLetterConfig` so failed records are kept.",
         "correct": false,
         "why": "A function-level DLQ applies only to asynchronous invocations. Stream event source mappings invoke the function synchronously and ignore `DeadLetterConfig`."
       },
@@ -210,15 +210,15 @@
     "domain": "incident",
     "topic": "EventBridge",
     "difficulty": "medium",
-    "scenario": "A SaaS company publishes `OrderPlaced` events from its order service to a custom EventBridge event bus. A rule routes them to a billing Lambda function. A bug deployed on Tuesday made the billing function silently ignore some events for 6 hours before it was fixed. The company needs to reprocess exactly the events from that window through the fixed function, and wants to be able to do the same for future incidents.",
+    "scenario": "A SaaS company publishes `OrderPlaced` events from its order service to a custom EventBridge event bus. A rule routes them to a billing Lambda function. A bug deployed on Tuesday made the billing function silently ignore some events for 6 hours, and the team spent days rebuilding the missed orders from database records. For future incidents like this, the company wants to be able to reprocess exactly the events from the affected time window through the fixed function.",
     "question": "Which solution meets these requirements with the LEAST operational overhead?",
     "qualifier": "LEAST operational overhead",
     "select": 1,
     "options": [
       {
-        "text": "Create an EventBridge archive on the custom event bus (with an event pattern for `OrderPlaced` and a retention period). After a future incident, start a replay from the archive for the affected time window, targeting the billing rule.",
+        "text": "Create an EventBridge archive on the custom event bus with an event pattern for `OrderPlaced` and a retention period. After an incident, start a replay from the archive for the affected time window, targeting the billing rule.",
         "correct": true,
-        "why": "Archives keep events matching a pattern on a bus, and `StartReplay` sends them back to the same bus for a chosen time range, optionally only to selected rules. Note that an archive only covers events received after it is created."
+        "why": "Archives keep events that match a pattern on a bus, and `StartReplay` sends them back to the same bus for a chosen time range, optionally only to selected rules. An archive only covers events received after it is created, which is why it has to be set up before the next incident."
       },
       {
         "text": "Configure an SQS dead-letter queue on the billing rule's target and redrive the messages after the fix.",
@@ -226,9 +226,9 @@
         "why": "A target DLQ only catches events EventBridge failed to deliver. Here delivery succeeded and the function ignored the events, so they never reach the DLQ."
       },
       {
-        "text": "Use CloudTrail Lake to query the `PutEvents` data events recorded on the custom event bus during the 6-hour window, export the results to S3, and run a script that reads the export and calls `PutEvents` again for each recorded event so the fixed billing function receives them.",
+        "text": "Add a CloudWatch Logs log group as a second target of the billing rule so that every `OrderPlaced` event is stored. After an incident, run a Logs Insights query for the affected window and a script that calls `PutEvents` again for each logged event.",
         "correct": false,
-        "why": "CloudTrail records the `PutEvents` API call, not the full event payloads. A custom republishing script is far more work than a replay."
+        "why": "This works because the log group stores the full events, but the team has to build and run a query-and-republish script for every incident. Republished events also reach every rule on the bus. Archive and replay does this natively and can target only the billing rule."
       },
       {
         "text": "Insert an SQS queue between the event bus and the function with a 14-day retention period and replay messages from the queue as needed.",
@@ -259,9 +259,9 @@
         "why": "One organization-scoped statement on the event bus policy lets every current and future member account send events, so you never have to add account IDs one by one."
       },
       {
-        "text": "Deploy (for example with service-managed StackSets) an EventBridge rule in each member account that matches the required events and targets the ARN of the `central-ops` bus, with an IAM role that allows `events:PutEvents` on that bus.",
+        "text": "Deploy an EventBridge rule in each member account and Region (for example with service-managed StackSets) that matches the required events and targets the `central-ops` bus ARN, with an IAM role that allows `events:PutEvents` on that bus.",
         "correct": true,
-        "why": "Events must be forwarded by a rule in the source account whose target is the other account's event bus. StackSets automatic deployment also creates the rule in new accounts."
+        "why": "Cross-account delivery is push-based: a rule in the source account targets the other account's event bus. EventBridge requires an IAM role on a rule whose target is an event bus in a different account, and that role needs `events:PutEvents` on the target bus. StackSets automatic deployment also creates the rule in new accounts."
       },
       {
         "text": "Share the `central-ops` event bus with the organization through AWS Resource Access Manager so member accounts' default buses deliver to it automatically.",
@@ -269,12 +269,12 @@
         "why": "EventBridge event buses cannot be shared through AWS RAM. Cross-account delivery uses event bus resource policies plus rules in the source accounts."
       },
       {
-        "text": "Create rules on the `central-ops` bus that use each member account's default event bus as the event source.",
+        "text": "Create rules on the `central-ops` bus whose event patterns list each member account's default event bus ARN as the event source, so the central account pulls the matching GuardDuty and EC2 events into its own bus.",
         "correct": false,
         "why": "EventBridge rules only match events already on their own bus. A central account cannot pull events from other accounts' buses; the source accounts have to push them."
       },
       {
-        "text": "Add each member account ID to the `central-ops` bus policy with a Lambda function triggered by the Organizations `CreateAccount` CloudTrail event.",
+        "text": "Add each member account ID to the `central-ops` bus policy automatically with a Lambda function that an EventBridge rule invokes on the Organizations `CreateAccount` CloudTrail event, and remove IDs on `CloseAccount`.",
         "correct": false,
         "why": "This works, but it means maintaining custom automation, and `aws:PrincipalOrgID` already covers new accounts without any changes."
       }
@@ -428,12 +428,12 @@
         "why": "This could work, but it means maintaining custom code for something a managed rule and AWS-owned runbook already do. Mixing evaluation and remediation also makes compliance history unreliable."
       },
       {
-        "text": "Enable AWS Trusted Advisor's security group check and configure weekly email notifications to the security team.",
+        "text": "Enable the AWS Trusted Advisor security group check for unrestricted ports and configure weekly email notifications to the security team, which then removes the offending rules from the console.",
         "correct": false,
         "why": "Trusted Advisor flags unrestricted ports but does not remediate. Weekly email does not meet the within-minutes requirement."
       },
       {
-        "text": "Enable Amazon Inspector network reachability findings and use Inspector to remove the offending rules.",
+        "text": "Enable Amazon Inspector EC2 scanning so that network reachability findings flag port 22 open to the internet, and configure Inspector to remove the offending ingress rules automatically.",
         "correct": false,
         "why": "Inspector reports network exposure but has no remediation actions. It never changes security groups."
       }
@@ -539,22 +539,22 @@
         "why": "Connections store the credentials (in an AWS managed Secrets Manager secret) and add the header to each request. API destinations call HTTPS endpoints with a configurable invocations-per-second limit."
       },
       {
-        "text": "Create an EventBridge rule matching `CloudWatch Alarm State Change` events where `detail.state.value` is `ALARM`, with the API destination as the target and an input transformer that maps event fields into the required `summary`, `severity`, and `source` JSON template.",
+        "text": "Create an EventBridge rule matching `CloudWatch Alarm State Change` events where `detail.state.value` is `ALARM`, targeting the API destination with an input transformer that maps event fields into the required `summary`, `severity`, and `source` JSON.",
         "correct": true,
         "why": "An input transformer extracts values from the event with `InputPathsMap` and builds a new body with `InputTemplate`. It reshapes the event payload without any Lambda function."
       },
       {
-        "text": "Subscribe the webhook URL to an SNS topic using the HTTPS protocol and configure the alarms to publish to the topic.",
+        "text": "Subscribe the webhook URL to an SNS topic using the HTTPS protocol, configure each alarm to publish to the topic, and set a delivery policy that throttles deliveries to the endpoint.",
         "correct": false,
         "why": "SNS HTTPS deliveries use SNS's own JSON envelope and require the endpoint to confirm the subscription. You can't set a custom API key header or build the vendor's body format."
       },
       {
-        "text": "Configure the input transformer to call the CloudWatch `DescribeAlarms` API and add the alarm's threshold and metric history to the payload.",
+        "text": "Configure the rule's input transformer to call the CloudWatch `DescribeAlarms` API for each event and add the alarm's threshold and recent metric history to the payload, so the vendor's tool gets richer context without a Lambda function.",
         "correct": false,
         "why": "Input transformers only reshape data already in the event. They can't call APIs or add outside data; that would need EventBridge Pipes enrichment or a Lambda function."
       },
       {
-        "text": "Create a Lambda function that formats the alarm and posts it to the webhook, with reserved concurrency set to 1 for rate limiting.",
+        "text": "Create a Lambda function that formats the alarm into the vendor's JSON body, reads the API key from Secrets Manager, and posts to the webhook, with reserved concurrency set to 1 for rate limiting.",
         "correct": false,
         "why": "This works, but it goes against the no-code requirement and means maintaining HTTP client code, retries, and secret handling yourself."
       }

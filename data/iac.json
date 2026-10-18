@@ -10,7 +10,7 @@
     "select": 1,
     "options": [
       { "text": "Set `UpdateReplacePolicy: Snapshot` on the DB instance and require all updates to go through change sets, reviewing the `Replacement` field before execution.", "correct": true, "why": "`UpdateReplacePolicy` controls what happens to the old physical resource during a replacement, and change sets show `Replacement: True` before anything changes." },
-      { "text": "Change `DeletionPolicy` to `Retain` and require all updates to go through change sets.", "correct": false, "why": "`DeletionPolicy` applies when the resource is removed from the template or the stack is deleted, not when an update replaces it." },
+      { "text": "Change `DeletionPolicy` to `Retain`, keep `UpdateReplacePolicy: Delete`, and require all updates to go through change sets so reviewers can spot replacements before execution.", "correct": false, "why": "`DeletionPolicy` applies only when the resource is removed from the template or the stack is deleted; with `UpdateReplacePolicy: Delete` a replacement still deletes the old instance without a snapshot." },
       { "text": "Apply a stack policy that denies `Update:Replace` on the DB instance and review changes with drift detection.", "correct": false, "why": "The stack policy blocks replacements entirely, which the company still needs, and drift detection compares live resources to the template rather than previewing updates." },
       { "text": "Enable termination protection on the stack and take a manual snapshot before every update.", "correct": false, "why": "Termination protection only prevents stack deletion and manual snapshots rely on people remembering; neither previews replacement." }
     ],
@@ -28,9 +28,9 @@
     "qualifier": null,
     "select": 1,
     "options": [
-      { "text": "Set a stack policy that allows `Update:*` on all resources and denies `Update:Replace` and `Update:Delete` on `LogicalResourceId/OrdersTable`; for an approved replacement, supply a temporary overriding stack policy for that single update.", "correct": true, "why": "Stack policies protect resources from specific update actions, and a stack policy provided during an update applies only to that update." },
-      { "text": "Set `DeletionPolicy: Retain` and `UpdateReplacePolicy: Retain` on the table.", "correct": false, "why": "These policies keep the old physical table after a replacement or deletion but do not prevent it; the stack would point to a new empty table." },
-      { "text": "Attach an IAM policy to the pipeline role that denies `cloudformation:UpdateStack` and grant the permission back during approved changes.", "correct": false, "why": "This blocks every update to the stack, not only replacement or deletion of the table, and requires permission juggling." },
+      { "text": "Apply a stack policy that allows `Update:*` but denies `Update:Replace` and `Update:Delete` on `LogicalResourceId/OrdersTable`; for an approved replacement, pass a temporary overriding policy with that update.", "correct": true, "why": "Stack policies protect resources from specific update actions, and a stack policy provided during an update applies only to that update." },
+      { "text": "Set `DeletionPolicy: Retain` and `UpdateReplacePolicy: Retain` on `OrdersTable` so that the production table is kept whenever an update would replace or remove it, and remove the attributes temporarily for an approved replacement.", "correct": false, "why": "These policies keep the old physical table after a replacement or deletion but do not prevent it; the stack would then point to a new, empty table." },
+      { "text": "Attach an IAM policy to the pipeline role that denies `cloudformation:ExecuteChangeSet` when a change set would replace or delete `OrdersTable`, and lift the deny temporarily for approved changes.", "correct": false, "why": "IAM has no condition keys that inspect which resources a change set replaces or deletes, so an IAM deny can only block whole operations, not just changes to the table." },
       { "text": "Enable termination protection on the stack.", "correct": false, "why": "Termination protection only prevents deleting the whole stack; it does not stop updates from replacing or removing a resource." }
     ],
     "takeaway": "Stack policies prevent unintended updates to specific resources; override them temporarily for a single update.",
@@ -42,15 +42,15 @@
     "domain": "iac",
     "topic": "AWS Config",
     "difficulty": "hard",
-    "scenario": "A company has 60 accounts in AWS Organizations with AWS Config enabled in every account, and the security account is the delegated administrator for AWS Config. The security team wants to deploy a standard set of 15 Config rules, including `cloudformation-stack-drift-detection-check` and S3 public access rules, together with automatic remediation through AWS Systems Manager Automation runbooks. The set must be managed as a single unit and must also apply to accounts that join the organization later.",
+    "scenario": "A company has 60 accounts in AWS Organizations with AWS Config enabled in every account; a baseline enables AWS Config in new accounts automatically. The security account is registered as the delegated administrator for AWS Config multi-account setup. The security team wants to deploy a standard set of 15 Config rules, including `cloudformation-stack-drift-detection-check` and S3 public access rules, together with automatic remediation through AWS Systems Manager Automation runbooks. The set must be managed as a single unit and must also apply to accounts that join the organization later.",
     "question": "Which solution meets these requirements with the LEAST operational overhead?",
     "qualifier": "LEAST operational overhead",
     "select": 1,
     "options": [
-      { "text": "Write a conformance pack template with the rules and remediation configurations that reference Automation runbooks, and deploy it as an organization conformance pack from the delegated administrator account.", "correct": true, "why": "Organization conformance packs deploy rules and remediation actions as one unit to all member accounts, including accounts added later." },
-      { "text": "Deploy each Config rule and remediation with a self-managed CloudFormation StackSet that targets every account ID.", "correct": false, "why": "Self-managed StackSets do not deploy automatically to new accounts, and the rules would not be tracked as one compliance unit." },
-      { "text": "Create a Config aggregator in the security account that collects data from all accounts and applies the rules centrally.", "correct": false, "why": "An aggregator only aggregates configuration and compliance data; it does not deploy rules or remediation to member accounts." },
-      { "text": "Enable the AWS Foundational Security Best Practices standard in AWS Security Hub for the organization.", "correct": false, "why": "Security Hub standards provide a fixed set of controls and do not deploy this custom rule set with Automation remediation as a single unit." }
+      { "text": "Write a conformance pack template with the 15 rules and remediation configurations that call Automation runbooks, and deploy it as an organization conformance pack from the delegated administrator.", "correct": true, "why": "Organization conformance packs deploy rules and remediation actions as one unit to all member accounts, including accounts added later." },
+      { "text": "Deploy each Config rule and remediation configuration with a self-managed CloudFormation StackSet from the security account, targeting all 60 account IDs and adding new IDs as accounts join.", "correct": false, "why": "Self-managed StackSets need someone to add every new account, and the 15 rules would not be tracked or reported as one compliance unit." },
+      { "text": "Create an organization-wide AWS Config aggregator in the security account, add the 15 rules and remediation actions to it, and let it evaluate every member account's resources centrally.", "correct": false, "why": "An aggregator only aggregates configuration and compliance data; it does not deploy rules or remediation to member accounts." },
+      { "text": "Enable AWS Security Hub CSPM with central configuration from the delegated administrator, and apply a configuration policy that turns on the AWS Foundational Security Best Practices standard everywhere.", "correct": false, "why": "Security Hub CSPM standards are fixed AWS-managed control sets; they do not deploy this custom 15-rule set with Automation remediation as a single unit." }
     ],
     "takeaway": "Organization conformance packs = Config rules + remediations deployed org-wide as one unit, including new accounts.",
     "trap": "Aggregators view; they do not deploy",
@@ -66,11 +66,11 @@
     "qualifier": null,
     "select": 2,
     "options": [
-      { "text": "Wrap the handler logic so that, for `Create`, `Update`, and `Delete` requests alike, it always sends a `SUCCESS` or `FAILED` response to the pre-signed `ResponseURL`, even when an exception occurs.", "correct": true, "why": "CloudFormation waits until it receives a response at the `ResponseURL`; an unhandled exception without a response leaves the stack waiting until timeout." },
-      { "text": "Set the `ServiceTimeout` property of the custom resource to a few minutes.", "correct": true, "why": "`ServiceTimeout` sets how long CloudFormation waits for a custom resource response (up to 3600 seconds, the default), so a missing response fails fast." },
-      { "text": "Increase the Lambda function timeout to 15 minutes.", "correct": false, "why": "The function already fails fast; the stack waits because no response was sent, not because the function ran out of time." },
-      { "text": "Set `DeletionPolicy: Retain` on the custom resource.", "correct": false, "why": "With `Retain`, CloudFormation skips deleting the custom resource, so the cleanup logic would never run." },
-      { "text": "Call `cfn-signal` from the Lambda function when processing finishes.", "correct": false, "why": "`cfn-signal` sends signals for creation policies and wait conditions; custom resources respond through the `ResponseURL`." }
+      { "text": "Wrap the handler so that every request type always sends a `SUCCESS` or `FAILED` response to the pre-signed `ResponseURL`, even when an exception occurs.", "correct": true, "why": "CloudFormation waits until it receives a response at the `ResponseURL`; an unhandled exception without a response leaves the stack waiting until timeout." },
+      { "text": "Set the `ServiceTimeout` property of the custom resource to a few minutes (for example 300 seconds).", "correct": true, "why": "`ServiceTimeout` sets how long CloudFormation waits for a custom resource response (1 to 3600 seconds; the default is 3600, which explains the hour-long wait), so a missing response fails fast." },
+      { "text": "Increase the Lambda function timeout to 15 minutes so the cleanup has enough time to finish before CloudFormation gives up.", "correct": false, "why": "The function already fails fast; the stack waits because no response was sent, not because the function ran out of time." },
+      { "text": "Set `DeletionPolicy: Retain` on the custom resource so that a failed cleanup no longer blocks stack deletion.", "correct": false, "why": "With `Retain`, CloudFormation does not send the `Delete` request to the custom resource, so the cleanup logic would never run." },
+      { "text": "Call `cfn-signal` from the Lambda function when processing finishes, and add a `CreationPolicy` with a 5-minute timeout to the custom resource.", "correct": false, "why": "`cfn-signal` and creation policies apply to instances, Auto Scaling groups, and wait conditions; custom resources respond through the `ResponseURL`." }
     ],
     "takeaway": "Custom resources must always respond to the ResponseURL (use try/finally); ServiceTimeout shortens the wait.",
     "trap": "Raising the Lambda timeout does not fix a missing response",
@@ -108,7 +108,7 @@
     "options": [
       { "text": "Export the values from the networking stack's `Outputs` and reference them in the application stacks with `Fn::ImportValue`.", "correct": true, "why": "Cross-stack exports decouple lifecycles, and CloudFormation blocks deleting or modifying an export while any stack imports it." },
       { "text": "Include the networking template as a nested stack inside each application stack.", "correct": false, "why": "Each application stack would create and own its own copy of the VPC resources, coupling lifecycles instead of sharing one VPC." },
-      { "text": "Write the values to SSM Parameter Store and reference them with `{{resolve:ssm:...}}` dynamic references.", "correct": false, "why": "This shares values but nothing stops the networking team from changing or deleting the parameters while they are in use." },
+      { "text": "Write the values to SSM Parameter Store from the networking stack and reference them in the application stacks with `{{resolve:ssm:/network/subnet-ids}}` dynamic references.", "correct": false, "why": "This shares values but nothing stops the networking team from changing or deleting the parameters while they are in use." },
       { "text": "Use `Fn::GetAtt` in the application stacks with the networking stack name and logical IDs.", "correct": false, "why": "`Fn::GetAtt` only references resources in the same template; it cannot read another stack's resources." }
     ],
     "takeaway": "Independent stacks sharing values with in-use protection = Export + Fn::ImportValue; nested stacks share a lifecycle.",
@@ -125,8 +125,8 @@
     "qualifier": "LEAST operational overhead",
     "select": 1,
     "options": [
-      { "text": "Create a CloudFormation StackSet with service-managed permissions that targets the `Workloads` OU in both Regions, with automatic deployment enabled and stack retention on account removal disabled.", "correct": true, "why": "Service-managed StackSets with automatic deployment add stack instances when accounts join the target OU and delete them when accounts leave." },
-      { "text": "Create a self-managed StackSet and an EventBridge rule on the Control Tower `CreateManagedAccount` lifecycle event that invokes a Lambda function to add stack instances.", "correct": false, "why": "This works for new accounts but needs custom code and the execution role in every account, and removal on OU moves needs even more code." },
+      { "text": "Create a CloudFormation StackSet with service-managed permissions targeting the `Workloads` OU in both Regions, with automatic deployment enabled and stack retention on account removal turned off.", "correct": true, "why": "Service-managed StackSets with automatic deployment add stack instances when accounts join the target OU and delete them when accounts leave." },
+      { "text": "Create a self-managed StackSet and an EventBridge rule on the Control Tower `CreateManagedAccount` lifecycle event that invokes a Lambda function to add stack instances for the new account in both Regions.", "correct": false, "why": "This works for new accounts but needs custom code and the execution role in every account, and removal on OU moves needs even more code." },
       { "text": "Share a Service Catalog portfolio containing the baseline product with the `Workloads` OU.", "correct": false, "why": "Sharing a portfolio only makes the product available; someone must still launch it in each account and Region." },
       { "text": "Deploy the IAM role and EventBridge rule in an organization conformance pack.", "correct": false, "why": "Conformance packs contain AWS Config rules and remediation configurations, not arbitrary resources like IAM roles and EventBridge rules." }
     ],
@@ -144,10 +144,10 @@
     "qualifier": null,
     "select": 2,
     "options": [
-      { "text": "Add the product to an AWS Service Catalog portfolio and grant the developers' IAM role access to the portfolio, along with end-user permissions to use Service Catalog.", "correct": true, "why": "Portfolio principal associations control who can see and launch products, without granting any rights on the underlying services." },
+      { "text": "Add the product to a Service Catalog portfolio and grant the developers' IAM role access to it, plus Service Catalog end-user permissions.", "correct": true, "why": "Portfolio principal associations control who can see and launch products, without granting any rights on the underlying services." },
       { "text": "Add a launch constraint to the product that specifies an IAM role with the permissions needed to create the product's resources.", "correct": true, "why": "Service Catalog assumes the launch constraint role to provision the product, so end users do not need permissions for the underlying resources." },
-      { "text": "Add a template constraint to the product that restricts the allowed instance classes.", "correct": false, "why": "Template constraints limit parameter values; they do not provide the permissions needed to provision the resources." },
-      { "text": "Grant the developers `AdministratorAccess` with a permissions boundary that only allows RDS actions.", "correct": false, "why": "This gives developers direct RDS permissions, which the requirement forbids, and is far from least privilege." },
+      { "text": "Add a template constraint to the product that restricts the DB instance classes and storage sizes developers can choose at launch.", "correct": false, "why": "Template constraints limit parameter values; they do not provide the permissions needed to provision the resources." },
+      { "text": "Grant the developers `AdministratorAccess` with a permissions boundary that allows only `rds:*` and the networking actions the product needs.", "correct": false, "why": "This gives developers direct RDS permissions, which the requirement forbids, and is far from least privilege." },
       { "text": "Add a tag update constraint so developers can update the product's tags after launch.", "correct": false, "why": "Tag update constraints only control tag edits on provisioned products and have nothing to do with launch permissions." }
     ],
     "takeaway": "Service Catalog launch constraint role = users provision products without permissions on the underlying services.",
@@ -202,10 +202,10 @@
     "qualifier": null,
     "select": 1,
     "options": [
-      { "text": "Add `Transform: AWS::LanguageExtensions` to the template and use `Fn::ForEach` to generate the topic, queue, and subscription for each name in the parameter.", "correct": true, "why": "The `AWS::LanguageExtensions` transform enables `Fn::ForEach`, which expands resources from a list at deployment time without custom code." },
-      { "text": "Write a CloudFormation macro backed by an AWS Lambda function that duplicates the resources for each name.", "correct": false, "why": "A custom macro works, but it is custom code the team would have to write and maintain." },
-      { "text": "Use a nested stack resource with a `Count` property set to the number of microservices.", "correct": false, "why": "CloudFormation resources have no `Count` property; that is a Terraform concept." },
-      { "text": "Use the `AWS::Include` transform to include a snippet that contains the three resources.", "correct": false, "why": "`AWS::Include` inserts a template snippet from S3 once; it does not loop over a list." }
+      { "text": "Add the `AWS::LanguageExtensions` transform and use `Fn::ForEach` over the parameter to generate the topic, queue, and subscription per name.", "correct": true, "why": "The `AWS::LanguageExtensions` transform enables `Fn::ForEach`, which expands resources from a list at deployment time without custom code." },
+      { "text": "Write a CloudFormation macro backed by an AWS Lambda function that reads the parameter and duplicates the topic, queue, and subscription for each name.", "correct": false, "why": "A custom macro works, but it is custom code the team would have to write and maintain." },
+      { "text": "Wrap the three resources in a nested stack and set a `Count` property on the `AWS::CloudFormation::Stack` resource to the number of names in the parameter.", "correct": false, "why": "CloudFormation resources have no `Count` property; that is a Terraform concept." },
+      { "text": "Use the `AWS::Include` transform to pull a snippet from S3 that defines the topic, queue, and subscription, once for every name in the list parameter.", "correct": false, "why": "`AWS::Include` inserts a template snippet from S3 once; it does not loop over a list." }
     ],
     "takeaway": "Loops in CloudFormation = AWS::LanguageExtensions transform + Fn::ForEach.",
     "trap": "Borrowing Terraform concepts",
@@ -221,8 +221,8 @@
     "qualifier": null,
     "select": 1,
     "options": [
-      { "text": "Using credentials for the production account, run `cdk bootstrap aws://222222222222/eu-west-1 --trust 111111111111 --cloudformation-execution-policies <policy ARN with the required permissions>`.", "correct": true, "why": "Each target account and Region must be bootstrapped, and `--trust` lets the tooling account assume the bootstrap deployment roles there." },
-      { "text": "Re-run `cdk bootstrap` in the tooling account with `--trust 222222222222`.", "correct": false, "why": "This trusts the wrong direction and still leaves the production account and Region without bootstrap resources." },
+      { "text": "With production account credentials, run `cdk bootstrap aws://222222222222/eu-west-1 --trust 111111111111 --cloudformation-execution-policies <policy ARN>`.", "correct": true, "why": "Each target account and Region must be bootstrapped, and `--trust` lets the tooling account assume the bootstrap deployment roles there." },
+      { "text": "Re-run `cdk bootstrap aws://111111111111/eu-west-1` in the tooling account with `--trust 222222222222` so the production account can use the pipeline's bootstrap resources.", "correct": false, "why": "This trusts in the wrong direction and still leaves the production account and Region without its own bootstrap resources." },
       { "text": "Create the `/cdk-bootstrap/hnb659fds/version` parameter manually in the production account.", "correct": false, "why": "The parameter only records the bootstrap version; the staging bucket, ECR repository, and deployment roles would still be missing." },
       { "text": "Run `cdk deploy --require-approval never` from the tooling account.", "correct": false, "why": "This only skips security change approval prompts; it does not create the bootstrap resources in the target environment." }
     ],
@@ -240,12 +240,12 @@
     "qualifier": null,
     "select": 3,
     "options": [
-      { "text": "Create custom patch baselines for each operating system with approval rules that auto-approve security patches of Critical and Important severity 7 days after release.", "correct": true, "why": "Approval rules with an auto-approval delay implement the 7-day waiting period, and separate baselines are needed per OS." },
+      { "text": "Create custom patch baselines per operating system with approval rules that auto-approve Critical and Important security patches 7 days after release.", "correct": true, "why": "Approval rules with an auto-approval delay implement the 7-day waiting period, and separate baselines are needed per OS." },
       { "text": "Tag instances with the `Patch Group` key (for example `prod` and `dev`) and register the patch groups with the custom baselines.", "correct": true, "why": "Patch groups associate instances with a specific patch baseline and make it easy to target each environment." },
-      { "text": "Create a maintenance window for each environment with the required schedule and a Run Command task that runs `AWS-RunPatchBaseline` with `Operation=Install`, targeting the matching patch group.", "correct": true, "why": "Maintenance windows enforce the allowed time ranges, and `AWS-RunPatchBaseline` installs approved patches on Linux and Windows and reports compliance." },
-      { "text": "Create EventBridge Scheduler schedules that run `AWS-RunShellScript` with `dnf upgrade --security` on all instances.", "correct": false, "why": "This does not patch Windows, ignores the patch baselines, and does not report patch compliance to Patch Manager." },
-      { "text": "Use a maintenance window task that runs the `AWS-ApplyPatchBaseline` document.", "correct": false, "why": "`AWS-ApplyPatchBaseline` is a legacy document that supports only Windows; `AWS-RunPatchBaseline` replaces it." },
-      { "text": "Enable automatic patch remediation in Amazon Inspector for the instances.", "correct": false, "why": "Inspector detects vulnerabilities but does not install patches on a schedule; patching is done by Patch Manager." }
+      { "text": "Create a maintenance window per environment on the required schedule with a Run Command task running `AWS-RunPatchBaseline` (`Operation=Install`) for the patch group.", "correct": true, "why": "Maintenance windows enforce the allowed time ranges, and `AWS-RunPatchBaseline` installs approved patches on Linux and Windows and reports compliance." },
+      { "text": "Create EventBridge Scheduler schedules for each window that run `AWS-RunShellScript` with `dnf upgrade --security` on instances tagged by environment.", "correct": false, "why": "This does not patch Windows, ignores the patch baselines, and does not report patch compliance to Patch Manager." },
+      { "text": "Create maintenance windows with the required schedules and a Run Command task that runs the `AWS-ApplyPatchBaseline` document against each patch group.", "correct": false, "why": "`AWS-ApplyPatchBaseline` is a legacy document that supports only Windows; `AWS-RunPatchBaseline` replaces it." },
+      { "text": "Enable Amazon Inspector EC2 scanning with automatic patch remediation so that Critical and Important findings are patched 7 days after detection.", "correct": false, "why": "Inspector detects vulnerabilities but has no scheduled patch installation; patching is done by Patch Manager." }
     ],
     "takeaway": "Patch Manager = patch baseline (approval rules) + patch groups + maintenance window running AWS-RunPatchBaseline.",
     "trap": "Legacy AWS-ApplyPatchBaseline",
@@ -261,12 +261,12 @@
     "qualifier": null,
     "select": 3,
     "options": [
-      { "text": "Attach an instance profile that includes the `AmazonSSMManagedInstanceCore` managed policy plus permission to write session logs to the S3 bucket and use the KMS key.", "correct": true, "why": "The SSM Agent needs core Systems Manager permissions to register, and the instance uploads session logs, so its role needs S3 and KMS permissions too." },
-      { "text": "Create interface VPC endpoints for `ssm`, `ssmmessages`, and `ec2messages`, and a gateway VPC endpoint for Amazon S3.", "correct": true, "why": "Without internet access, the agent reaches Systems Manager and the Session Manager channel through these endpoints, and uploads logs through the S3 endpoint." },
+      { "text": "Attach an instance profile with `AmazonSSMManagedInstanceCore` plus permission to write session logs to the S3 bucket and use the KMS key.", "correct": true, "why": "The SSM Agent needs core Systems Manager permissions to register, and the instance uploads session logs, so its role needs S3 and KMS permissions too." },
+      { "text": "Create interface VPC endpoints for `ssm`, `ssmmessages`, and `ec2messages`, and a gateway VPC endpoint for Amazon S3.", "correct": true, "why": "Without internet access, the agent reaches Systems Manager and the Session Manager data channel through these endpoints (recent agents use `ssmmessages` in place of `ec2messages`, but the documented setup includes all three), and uploads logs through the S3 endpoint. No KMS endpoint is needed for SSE-KMS on the bucket because S3 calls KMS itself." },
       { "text": "Configure Session Manager preferences to send session logs to the encrypted S3 bucket, and grant operators `ssm:StartSession` on the allowed instances.", "correct": true, "why": "Session logging is set in Session Manager preferences, and IAM policies on `ssm:StartSession` control who can open sessions on which instances." },
-      { "text": "Allow inbound TCP 443 in the instances' security group from the Session Manager service IP ranges.", "correct": false, "why": "Session Manager needs no inbound rules; the agent initiates outbound HTTPS connections to the endpoints." },
-      { "text": "Create an EC2 Instance Connect Endpoint in the private subnets for operator access.", "correct": false, "why": "EC2 Instance Connect Endpoint tunnels SSH to port 22 on the instance, which is forbidden, and does not record session contents." },
-      { "text": "Enable AWS CloudTrail data events to capture every command typed in a session.", "correct": false, "why": "CloudTrail records API calls such as `StartSession`, not the commands and output inside a session." }
+      { "text": "Allow inbound TCP 443 in the instances' security group from the Session Manager service IP ranges published in `ip-ranges.json`.", "correct": false, "why": "Session Manager needs no inbound rules; the agent initiates outbound HTTPS connections to the endpoints." },
+      { "text": "Create an EC2 Instance Connect Endpoint in the private subnets and let operators connect with `aws ec2-instance-connect ssh` using IAM.", "correct": false, "why": "EC2 Instance Connect Endpoint tunnels SSH to port 22 on the instance, which is forbidden, and does not record session contents." },
+      { "text": "Enable AWS CloudTrail data events for Systems Manager so that every command typed in a session is recorded in the encrypted S3 bucket.", "correct": false, "why": "CloudTrail records API calls such as `StartSession`, not the commands and output inside a session." }
     ],
     "takeaway": "Session Manager in a private VPC = instance role + ssm/ssmmessages/ec2messages endpoints (+ S3/CloudWatch for logs); no inbound ports.",
     "trap": "Opening inbound ports for Session Manager",
@@ -282,10 +282,10 @@
     "qualifier": "LEAST operational overhead",
     "select": 1,
     "options": [
-      { "text": "Store the configuration in an Advanced-tier parameter, and create State Manager associations that target `Env=prod` and run `AWS-ConfigureAWSPackage` for the agent and `AmazonCloudWatch-ManageAgent` with the parameter as the configuration source on a 30-minute schedule.", "correct": true, "why": "Advanced-tier parameters hold up to 8 KB, and State Manager applies associations to matching instances when they come online and reapplies them on a schedule to fix drift." },
-      { "text": "Store the configuration in a Standard-tier parameter with higher throughput enabled, and create the same State Manager associations.", "correct": false, "why": "Standard-tier parameters are limited to 4 KB regardless of the throughput setting, so the 6 KB configuration cannot be stored." },
-      { "text": "Store the configuration in an Advanced-tier parameter and run `AWS-ConfigureAWSPackage` and `AmazonCloudWatch-ManageAgent` once with Run Command against `Env=prod`.", "correct": false, "why": "Run Command runs once against current instances; it does not cover instances launched later or correct drift." },
-      { "text": "Store the configuration in an Advanced-tier parameter and install and configure the agent from user data in the launch template.", "correct": false, "why": "User data only runs at first boot of new instances, so existing instances and later uninstalls or config changes are not corrected." }
+      { "text": "Store the configuration in an Advanced-tier parameter and create State Manager associations targeting `Env=prod` that run `AWS-ConfigureAWSPackage` and `AmazonCloudWatch-ManageAgent` (using the parameter) every 30 minutes.", "correct": true, "why": "Advanced-tier parameters hold up to 8 KB, and State Manager applies associations to matching instances when they come online and reapplies them on a schedule to fix drift." },
+      { "text": "Store the configuration in a Standard-tier parameter with higher throughput enabled, and create the same State Manager associations targeting `Env=prod` on a 30-minute schedule.", "correct": false, "why": "Standard-tier parameters are limited to 4 KB regardless of the throughput setting, so the 6 KB configuration cannot be stored." },
+      { "text": "Store the configuration in an Advanced-tier parameter and use Run Command to execute `AWS-ConfigureAWSPackage` and `AmazonCloudWatch-ManageAgent` (using the parameter) against all instances tagged `Env=prod`.", "correct": false, "why": "Run Command runs once against current instances; it does not cover instances launched later or correct drift." },
+      { "text": "Store the configuration in an Advanced-tier parameter and add launch template user data that installs the agent and loads the configuration with `amazon-cloudwatch-agent-ctl -a fetch-config -c ssm:<parameter>`.", "correct": false, "why": "User data only runs at first boot of new instances, so existing instances and later uninstalls or config changes are not corrected." }
     ],
     "takeaway": "Desired state on a schedule, including new instances = State Manager association; Parameter Store Standard 4 KB vs Advanced 8 KB.",
     "trap": "Run Command is one-time; Standard tier is 4 KB",
@@ -301,10 +301,10 @@
     "qualifier": "LEAST operational overhead",
     "select": 1,
     "options": [
-      { "text": "Create an AWS AppConfig feature flag configuration profile with flag attribute constraints, deploy it with a 30-minute linear deployment strategy to an environment that monitors the CloudWatch alarm, and read the flags in the function through the AWS AppConfig Agent Lambda extension.", "correct": true, "why": "AppConfig validates feature flag values, rolls out configuration gradually according to the deployment strategy, and rolls back automatically when an environment's alarm fires." },
-      { "text": "Store the flag in an Advanced-tier SSM parameter with parameter policies and read it from Parameter Store on every invocation.", "correct": false, "why": "Parameter policies handle expiration and notifications only; there is no gradual rollout or alarm-based rollback, and per-invocation reads can hit throughput limits." },
+      { "text": "Use an AWS AppConfig feature flag profile with attribute constraints, a 30-minute linear deployment strategy, and an environment that monitors the alarm; read flags through the AppConfig Lambda extension.", "correct": true, "why": "AppConfig validates feature flag values, rolls out configuration gradually according to the deployment strategy, and rolls back automatically when an environment's alarm fires." },
+      { "text": "Store the flag in an Advanced-tier SSM parameter with parameter policies, have a Step Functions workflow raise a rollout-percentage value over 30 minutes, and read it through the Parameters and Secrets Lambda extension.", "correct": false, "why": "Parameter policies only handle expiration and notifications. The gradual rollout, alarm-based rollback, and value validation would all be custom workflow and application logic." },
       { "text": "Store the flag as a Lambda environment variable and change it with a CodeDeploy linear deployment that uses the alarm for rollback.", "correct": false, "why": "Changing an environment variable requires publishing a new function version and running a deployment, which is the code deployment the team wants to avoid." },
-      { "text": "Use Amazon CloudWatch Evidently feature launches to roll out the flag with alarm-based rollback.", "correct": false, "why": "CloudWatch Evidently has been discontinued, and AWS directs feature flag use cases to AWS AppConfig." }
+      { "text": "Use Amazon CloudWatch Evidently feature launches with a 30-minute scheduled traffic split and a CloudWatch alarm that stops the launch, reading variations through the Evidently `EvaluateFeature` API.", "correct": false, "why": "CloudWatch Evidently has been discontinued, and AWS directs feature flag use cases to AWS AppConfig." }
     ],
     "takeaway": "Feature flags with validation, gradual rollout, and alarm rollback = AWS AppConfig (use the Lambda extension to read them).",
     "trap": "Parameter Store has no gradual rollout",

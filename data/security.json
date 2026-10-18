@@ -85,9 +85,9 @@
     "select": 1,
     "options": [
       {
-        "text": "Enable attributes for access control in IAM Identity Center, mapping the Okta `project` attribute (passed in the SAML assertion or through SCIM) to a session tag. Create one permission set whose policy allows actions only when `aws:ResourceTag/project` equals `${aws:PrincipalTag/project}`.",
+        "text": "Enable attributes for access control in IAM Identity Center, mapping the Okta `project` attribute to a session tag, and create one permission set whose policy allows actions only when `aws:ResourceTag/project` equals `${aws:PrincipalTag/project}`.",
         "correct": true,
-        "why": "This is ABAC: Identity Center passes the user's attribute as a principal tag on the session, so one permission set works for every project. Moving a consultant only requires changing the attribute in Okta."
+        "why": "This is ABAC: Identity Center passes the user's attribute (from the SAML assertion or the SCIM-synced profile) as a principal tag on the session, so one permission set works for every project. Moving a consultant only requires changing the attribute in Okta."
       },
       {
         "text": "Create one permission set per project with resource ARNs hard-coded, and assign consultants to the matching permission set when they change projects.",
@@ -95,7 +95,7 @@
         "why": "This is role-based access with 120 permission sets to maintain and reassignments every time someone moves. That is the overhead ABAC is meant to remove."
       },
       {
-        "text": "Create an IAM OIDC identity provider for Okta in each account and have consultants use `AssumeRoleWithWebIdentity` with a project-specific role.",
+        "text": "Create an IAM OIDC identity provider for Okta in every account and one IAM role per project whose trust policy checks the `project` claim, and have consultants call `AssumeRoleWithWebIdentity` with their Okta ID token for the role that matches their project.",
         "correct": false,
         "why": "This bypasses Identity Center, requires per-account providers and per-project roles, and uses web identity federation meant for apps rather than workforce console access."
       },
@@ -133,12 +133,12 @@
         "why": "Policy generation reads the role's CloudTrail activity and produces a policy limited to the services and actions actually used, which gives a least-privilege starting point."
       },
       {
-        "text": "Download the IAM credential report from each account every week and combine the reports in Amazon Athena.",
+        "text": "Download the IAM credential report from every account each week with a scheduled Lambda function, store the reports in S3, and combine them in Amazon Athena to find unused principals.",
         "correct": false,
         "why": "Credential reports only cover IAM users, not roles or unused permissions. Collecting them from 60 accounts every week is manual overhead."
       },
       {
-        "text": "Deploy the `iam-user-unused-credentials-check` AWS Config rule through an organization conformance pack.",
+        "text": "Deploy the `iam-user-unused-credentials-check` AWS Config managed rule to every account through an organization conformance pack, with a 90-day threshold for unused credentials.",
         "correct": false,
         "why": "That rule only checks IAM user passwords and keys. It ignores roles and can't find unused permissions inside policies."
       },
@@ -255,12 +255,12 @@
         "why": "To send to an SSE-KMS queue, the sender needs permission to generate a data key with the queue's KMS key. S3 has to be allowed in the key policy or the message can't be encrypted."
       },
       {
-        "text": "Create an IAM role that S3 can assume with `sqs:SendMessage` permission, and set the role ARN on the bucket notification configuration.",
+        "text": "Create an IAM role that trusts `s3.amazonaws.com` with `sqs:SendMessage` and `kms:GenerateDataKey` permissions, and set the role ARN on the bucket notification configuration.",
         "correct": false,
         "why": "S3 event notifications don't use an IAM role; there's no role setting on the notification configuration. Permission comes only from the destination's resource policy."
       },
       {
-        "text": "Change the queue encryption to the AWS managed key `aws/sqs` to avoid editing key policies.",
+        "text": "Change the queue encryption to the AWS managed key `aws/sqs` so that S3 can use the key without any key policy changes.",
         "correct": false,
         "why": "You can't change the key policy of an AWS managed key, and it doesn't allow S3, so notifications to a queue encrypted with `aws/sqs` fail. Use SSE-SQS or a customer managed key."
       },
@@ -304,12 +304,12 @@
         "why": "To control access to a key in another account in an IAM policy, use the key ARN. An alias ARN resource only controls access to the alias, not to the key."
       },
       {
-        "text": "Re-encrypt the objects with the AWS managed key `aws/s3` and share it with account B.",
+        "text": "Re-encrypt the objects with the AWS managed key `aws/s3` and add account B to that key's policy.",
         "correct": false,
         "why": "You can't edit AWS managed key policies, so they can't be used across accounts. That makes this approach impossible."
       },
       {
-        "text": "In account B, create a KMS grant on account A's key for the Lambda role.",
+        "text": "In account B, create a KMS grant on account A's key for the Lambda execution role with the `Decrypt` operation.",
         "correct": false,
         "why": "Account B can only create a grant if account A's key policy already allows it to call `kms:CreateGrant`. Even then, a grant adds complexity without solving the missing key policy permission."
       }
@@ -328,7 +328,7 @@
     "domain": "security",
     "topic": "KMS multi-Region keys",
     "difficulty": "medium",
-    "scenario": "A fintech company encrypts sensitive fields on the client side with the AWS Encryption SDK and a KMS key in us-east-1, then stores the ciphertext in a DynamoDB global table that replicates to eu-west-1. For disaster recovery, the application in eu-west-1 must be able to decrypt the data even if us-east-1 is completely unavailable, without re-encrypting the data.",
+    "scenario": "A fintech company is designing a new application that will encrypt sensitive fields on the client side with the AWS Encryption SDK and a KMS key in us-east-1, then store the ciphertext in a DynamoDB global table that replicates to eu-west-1. For disaster recovery, the application in eu-west-1 must be able to decrypt the data even if us-east-1 is completely unavailable, without re-encrypting any data.",
     "question": "Which solution meets these requirements?",
     "qualifier": null,
     "select": 1,
@@ -339,7 +339,7 @@
         "why": "Multi-Region keys share the same key material and key ID across Regions, so ciphertext produced in one Region can be decrypted locally by the replica without calling the original Region."
       },
       {
-        "text": "Keep the single-Region key and have the eu-west-1 application call the us-east-1 KMS endpoint to decrypt.",
+        "text": "Use a single-Region key in us-east-1 and have the eu-west-1 application call the us-east-1 KMS endpoint to decrypt.",
         "correct": false,
         "why": "This keeps a hard dependency on us-east-1. If that Region is down, decryption fails, which breaks the DR requirement."
       },
@@ -354,7 +354,7 @@
         "why": "Automatic rotation only creates new key material for the same key in the same Region. It never copies keys to other Regions."
       }
     ],
-    "takeaway": "Multi-Region KMS keys let you decrypt in another Region without cross-Region calls. Aliases and single-Region keys don't carry over between Regions.",
+    "takeaway": "Multi-Region KMS keys let you decrypt in another Region without cross-Region calls. Aliases and single-Region keys don't carry over between Regions, and an existing single-Region key can't be converted to multi-Region.",
     "trap": "Assuming aliases/rotation make keys multi-Region",
     "services": [
       "KMS",
@@ -502,7 +502,7 @@
       {
         "text": "In the delegated administrator account, in each Region, create an EventBridge rule matching `source` `aws.guardduty` with a numeric event pattern on `detail.severity` `>= 7`, targeting an SNS topic with the team's email subscribed.",
         "correct": true,
-        "why": "GuardDuty sends findings to EventBridge, including member findings in the administrator account. A numeric match on severity covers High (7.0 to 8.9) and Critical (9.0 to 10.0)."
+        "why": "GuardDuty sends findings to EventBridge, and the administrator account receives events for member findings too. GuardDuty severity bands are Low (1.0 to 3.9), Medium (4.0 to 6.9), High (7.0 to 8.9), and Critical (9.0 to 10.0), so a numeric match on `>= 7` covers High and Critical."
       },
       {
         "text": "Subscribe the security team's email address directly to GuardDuty finding notifications in the GuardDuty console.",
@@ -510,12 +510,12 @@
         "why": "GuardDuty has no direct SNS or email subscription for findings. Notifications go through EventBridge, optionally with Security Hub in the path."
       },
       {
-        "text": "Enable Amazon Detective in the security tooling account and configure it to email high-severity findings.",
+        "text": "Enable Amazon Detective in the security tooling account as the organization's delegated administrator, ingest GuardDuty findings from all member accounts, and configure Detective to email the security team about every finding with high or critical severity.",
         "correct": false,
         "why": "Detective helps investigate findings with behavior graphs. It doesn't detect threats or send alerts, so it adds cost without meeting the requirement."
       },
       {
-        "text": "Use CloudFormation StackSets to enable a GuardDuty detector and an EventBridge rule in every member account and Region.",
+        "text": "Use CloudFormation StackSets to create a GuardDuty detector, an EventBridge rule for severity `>= 7`, and an SNS topic with the team's email in every member account and Region.",
         "correct": false,
         "why": "This works, but it duplicates rules and topics in every account and doesn't centralize findings. Org auto-enable and a central rule have much less overhead."
       }
@@ -534,7 +534,7 @@
     "domain": "security",
     "topic": "Security Hub",
     "difficulty": "hard",
-    "scenario": "A company uses AWS Security Hub CSPM across 40 accounts in four Regions, with a delegated administrator account. Security analysts complain that they must switch Regions to see findings, and that one control (`EC2.8`, IMDSv2 required) floods them with findings from sandbox accounts, where the risk has been formally accepted. The team wants one place to see all findings and wants new sandbox findings for that control suppressed automatically, without custom code.",
+    "scenario": "A company uses AWS Security Hub (the CSPM capability, with security standards and controls) across 40 accounts in four Regions, with a delegated administrator account. Security analysts complain that they must switch Regions to see findings, and that one control (`EC2.8`, IMDSv2 required) floods them with findings from sandbox accounts, where the risk has been formally accepted. The team wants one place to see all findings and wants new sandbox findings for that control suppressed automatically, without custom code.",
     "question": "Which solution meets these requirements with the LEAST operational overhead?",
     "qualifier": "LEAST operational overhead",
     "select": 1,
@@ -668,12 +668,12 @@
     "select": 1,
     "options": [
       {
-        "text": "Designate a Firewall Manager administrator account, make sure AWS Config is enabled in member accounts, and create Firewall Manager AWS WAF policies (one Regional for ALBs, one global for CloudFront) that include the required rule groups, with automatic remediation turned on and scope set to the organization.",
+        "text": "Designate a Firewall Manager administrator account, make sure AWS Config is enabled in member accounts, and create Firewall Manager AWS WAF policies (Regional for ALBs, global for CloudFront) with the required rule groups, automatic remediation, and organization scope.",
         "correct": true,
         "why": "Firewall Manager deploys and associates WAF web ACLs across accounts, applies them to new resources in scope, and fixes non-compliant resources. It requires Organizations and AWS Config."
       },
       {
-        "text": "Subscribe all accounts to AWS Shield Advanced, which automatically applies the AWS Managed Rules core rule set to protected resources.",
+        "text": "Subscribe all accounts to AWS Shield Advanced and enable automatic application layer DDoS mitigation, which applies the AWS Managed Rules core rule set and a rate-based rule to every protected ALB and CloudFront distribution.",
         "correct": false,
         "why": "Shield Advanced adds DDoS protection, response team support, and cost protection. It doesn't deploy the core rule set or custom rate-based rules to every resource across the organization."
       },
@@ -683,7 +683,7 @@
         "why": "Network Firewall inspects VPC traffic, not ALB or CloudFront at layer 7 the way WAF does. It can't protect CloudFront distributions and isn't the required WAF web ACL."
       },
       {
-        "text": "Use CloudFormation StackSets with service-managed permissions to deploy a WAF web ACL containing the core rule set and the rate-based rule to every account and Region, and document that teams must associate the web ACL with each new ALB or distribution.",
+        "text": "Use CloudFormation StackSets with service-managed permissions to deploy a WAF web ACL with the core rule set and the rate-based rule to every account and Region, and require teams to associate it with each new ALB or distribution.",
         "correct": false,
         "why": "This creates the web ACLs but relies on teams to attach them, so new resources can be left unprotected and nothing remediates automatically."
       }
