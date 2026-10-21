@@ -130,46 +130,6 @@
     ]
   },
   {
-    "id": "extra-004",
-    "domain": "sdlc",
-    "topic": "SAM DeploymentPreference",
-    "difficulty": "medium",
-    "scenario": "A team deploys a Lambda-based API using the AWS Serverless Application Model (SAM). New versions must receive 10% of traffic for 10 minutes and then all of it, and the deployment must roll back automatically if the function's error rate rises during the shift. A smoke-test Lambda function must also run before any traffic moves to the new version.",
-    "question": "Which SAM configuration meets these requirements?",
-    "qualifier": null,
-    "select": 1,
-    "options": [
-      {
-        "text": "`AutoPublishAlias: live`, `DeploymentPreference` with `Type: Canary10Percent10Minutes`, `Alarms: [ErrorAlarm]` and `Hooks: PreTraffic: SmokeTestFn`.",
-        "correct": true,
-        "why": "Canary10Percent10Minutes shifts 10% then the rest after 10 minutes, the alarm triggers CodeDeploy rollback, and the PreTraffic hook (BeforeAllowTraffic) runs before any shift."
-      },
-      {
-        "text": "`AutoPublishAlias: live`, `DeploymentPreference` with `Type: Linear10PercentEvery10Minutes`, `Alarms: [ErrorAlarm]` and `Hooks: PostTraffic: SmokeTestFn`.",
-        "correct": false,
-        "why": "Linear adds 10% every 10 minutes (100 minutes total), not 10% then everything, and a PostTraffic hook runs after traffic has moved."
-      },
-      {
-        "text": "`DeploymentPreference` with `Type: AllAtOnce`, `Alarms: [ErrorAlarm]` and `Hooks: PreTraffic: SmokeTestFn`.",
-        "correct": false,
-        "why": "AllAtOnce shifts all traffic immediately, and without `AutoPublishAlias` SAM cannot do gradual deployments at all."
-      },
-      {
-        "text": "`AutoPublishAlias: live`, `DeploymentPreference` with `Type: Canary10Percent10Minutes` and `Hooks: PreTraffic: SmokeTestFn`, plus an EventBridge rule that invokes a Lambda function to point the alias back to the previous version on errors.",
-        "correct": false,
-        "why": "Custom rollback logic duplicates what the `Alarms` property already provides natively through CodeDeploy."
-      }
-    ],
-    "takeaway": "Canary = one step then all; Linear = equal steps; PreTraffic = before any shift; Alarms = automatic rollback.",
-    "trap": "Canary vs Linear naming",
-    "services": [
-      "SAM",
-      "Lambda",
-      "CodeDeploy",
-      "CloudWatch"
-    ]
-  },
-  {
     "id": "extra-005",
     "domain": "iac",
     "topic": "CloudFormation StackSets",
