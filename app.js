@@ -937,6 +937,16 @@
     else document.documentElement.setAttribute('data-theme', state.theme);
   }
 
+  // Drop questions removed from the bank out of saved exams.
+  for (const key of ['exam', 'lastExam']) {
+    const ex = state[key];
+    if (!ex || !ex.ids) continue;
+    ex.ids = ex.ids.filter(id => BY_ID[id]);
+    if (ex.results) ex.results = Object.fromEntries(Object.entries(ex.results).filter(([id]) => BY_ID[id]));
+    if (!ex.ids.length) state[key] = null;
+    else if (ex.i >= ex.ids.length) ex.i = 0;
+  }
+
   applyTheme();
   render();
 })();
